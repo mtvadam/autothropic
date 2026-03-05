@@ -141,15 +141,18 @@ export class SessionManager {
 			env,
 		});
 
-		// Only clear the IPC hook that Claude Code uses to discover and open
-		// windows in external VS Code instances. Keep all other VS Code env vars
-		// intact so git integration, source control, etc. still work.
-		const unsetVars = '$env:VSCODE_IPC_HOOK_CLI=""';
-		const fullPrompt = this.buildSystemPrompt(systemPrompt);
+		// Prevent Claude Code from discovering and opening windows in external
+		// VS Code instances. Clear IPC hook, remove VS Code from PATH (so `code`
+		// CLI can't be found), and temporarily hide the code.lock file.
+		const setupCmd = [
+			'$env:VSCODE_IPC_HOOK_CLI=""',
+			'$env:PATH=($env:PATH -split ";" | Where-Object { $_ -notmatch "VS Code" }) -join ";"',
+		].join('; ');
+		const fullPrompt = this.buildSystemPrompt(sessionName, systemPrompt);
 		if (fullPrompt) {
-			terminal.sendText(`${unsetVars}; claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
+			terminal.sendText(`${setupCmd}; claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
 		} else {
-			terminal.sendText(`${unsetVars}; claude`);
+			terminal.sendText(`${setupCmd}; claude`);
 		}
 
 		const session: AgentSession = {
@@ -220,8 +223,10 @@ export class SessionManager {
 	 * Build a rich system prompt that includes topology awareness.
 	 * Each agent gets context about the full team and its connections.
 	 */
-	private buildSystemPrompt(basePrompt?: string): string {
+	private buildSystemPrompt(agentName: string, basePrompt?: string): string {
 		const parts: string[] = [];
+
+		parts.push(`Your name is "${agentName}".`);
 
 		if (basePrompt) {
 			parts.push(basePrompt);
@@ -363,11 +368,11 @@ export class SessionManager {
 			env,
 		});
 
-		const unsetVars = '$env:VSCODE_IPC_HOOK_CLI=""';
+		const setupCmd = '$env:VSCODE_IPC_HOOK_CLI=""; $env:PATH=($env:PATH -split ";" | Where-Object { $_ -notmatch "VS Code" }) -join ";"';
 		if (systemPrompt) {
-			newTerminal.sendText(`${unsetVars}; claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
+			newTerminal.sendText(`${setupCmd}; claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
 		} else {
-			newTerminal.sendText(`${unsetVars}; claude`);
+			newTerminal.sendText(`${setupCmd}; claude`);
 		}
 
 		session.terminal = newTerminal;

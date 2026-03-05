@@ -141,17 +141,10 @@ export class SessionManager {
 			env,
 		});
 
-		// Clear VS Code IPC env vars so claude CLI can't open VS Code windows,
-		// then launch claude. Use PowerShell syntax since Windows terminals default to PS.
-		const unsetVars = [
-			'$env:VSCODE_IPC_HOOK_CLI=""',
-			'$env:VSCODE_GIT_IPC_HANDLE=""',
-			'$env:VSCODE_PID=""',
-			'$env:VSCODE_INJECTION=""',
-			'$env:TERM_PROGRAM="autothropic"',
-			'$env:EDITOR="cat"',
-			'$env:VISUAL="cat"',
-		].join('; ');
+		// Only clear the IPC hook that Claude Code uses to discover and open
+		// windows in external VS Code instances. Keep all other VS Code env vars
+		// intact so git integration, source control, etc. still work.
+		const unsetVars = '$env:VSCODE_IPC_HOOK_CLI=""';
 		const fullPrompt = this.buildSystemPrompt(systemPrompt);
 		if (fullPrompt) {
 			terminal.sendText(`${unsetVars}; claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
@@ -370,7 +363,7 @@ export class SessionManager {
 			env,
 		});
 
-		const unsetVars = '$env:VSCODE_IPC_HOOK_CLI=""; $env:VSCODE_GIT_IPC_HANDLE=""; $env:VSCODE_PID=""; $env:VSCODE_INJECTION=""; $env:TERM_PROGRAM="autothropic"; $env:EDITOR="cat"; $env:VISUAL="cat"';
+		const unsetVars = '$env:VSCODE_IPC_HOOK_CLI=""';
 		if (systemPrompt) {
 			newTerminal.sendText(`${unsetVars}; claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
 		} else {

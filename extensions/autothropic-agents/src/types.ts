@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-export type SessionStatus = 'running' | 'waiting' | 'error' | 'complete' | 'paused' | 'exited';
+export type SessionStatus = 'running' | 'waiting' | 'input_needed' | 'error' | 'complete' | 'paused' | 'exited';
 
 export interface AgentSession {
 	id: string;

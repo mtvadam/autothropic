@@ -314,6 +314,22 @@ export class PreviewPanel {
       case 'spaNavigation':
         // SPA client-side navigation detected — track display URL without reloading
         break;
+      case 'openExternal': {
+        // Open auth popups in system browser
+        const url = msg.url as string;
+        if (url) {
+          const cp = require('child_process');
+          const escaped = url.replace(/"/g, '\\"');
+          if (process.platform === 'win32') {
+            cp.exec(`start "" "${escaped}"`);
+          } else if (process.platform === 'darwin') {
+            cp.exec(`open "${escaped}"`);
+          } else {
+            cp.exec(`xdg-open "${escaped}"`);
+          }
+        }
+        break;
+      }
       case 'screenshot':
         this._onScreenshot.fire();
         break;
@@ -413,6 +429,7 @@ export class PreviewPanel {
     const ALL_DEVICES = ${devicesJson};
     const ALL_PRESETS = ${presetsJson};
     const CURRENT_URL = ${JSON.stringify(this.currentUrl ?? '')};
+    const PROXY_ORIGIN = ${JSON.stringify(this.proxy.getLocalUrl())};
     const IS_RECORDING = false;
   </script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
@@ -640,7 +657,7 @@ export class PreviewPanel {
         { value: 'windows-10', label: 'Win 10' },
       ], c.osFrame === 'none' ? 'macos' : c.osFrame, 'setOsFrame');
 
-      if (c.osFrame !== 'none') {
+      if (c.osFrame !== 'none' && (c.browserChrome === 'chrome' || c.browserChrome === 'edge')) {
         const tbActive = c.showTaskbar ? ' active' : '';
         html += `<button class="tool-btn${tbActive}" data-action="toggleTaskbar" title="Toggle OS taskbar">Taskbar</button>`;
       }
@@ -735,7 +752,7 @@ export class PreviewPanel {
 
   private buildCustomFrame(w: number, h: number): string {
     return `<div id="device-frame" class="custom" style="width:${w}px;height:${h}px;">
-  <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+  <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
 </div>`;
   }
 
@@ -880,7 +897,7 @@ export class PreviewPanel {
         ${statusBarHtml}
       </div>
       ${chromeHtml.top}
-      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
       ${chromeHtml.bottom}
       ${homeIndicatorHtml}
     </div>
@@ -923,14 +940,14 @@ export class PreviewPanel {
     const containerH = h + frameWidth * 2;
 
     return `<div id="device-frame" class="phone" style="position:relative;width:${containerW}px;height:${containerH}px;padding:0 ${btnPad}px;">
-  <div style="position:relative;border-radius:${bezelRadius}px;border:solid ${frameWidth}px #2A2A2C;overflow:hidden;">
-    <div class="screen-area" style="display:flex;flex-direction:column;position:relative;width:${w}px;height:${h}px;background:${statusBarBg};overflow:hidden;border-radius:${screenCR}px;">
+  <div style="position:relative;border-radius:${bezelRadius}px;border:solid ${frameWidth}px #2A2A2C;overflow:hidden;width:${w}px;">
+    <div class="screen-area" style="display:flex;flex-direction:column;position:relative;width:${w}px;height:${h}px;background:${statusBarBg};overflow:hidden;">
       ${islandHtml}
       <div class="status-bar" style="height:${sbH}px;background:${statusBarBg};">
         ${statusBarHtml}
       </div>
       ${chromeHtml.top}
-      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
       ${chromeHtml.bottom}
       ${homeIndicatorHtml}
     </div>
@@ -948,7 +965,7 @@ export class PreviewPanel {
 
     return `<div id="device-frame" class="tablet">
   <div class="screen-area" style="width:${w}px;height:${h}px;">
-    <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
   </div>
 </div>`;
   }
@@ -977,7 +994,7 @@ export class PreviewPanel {
       ${taskbarHtml.top}
       ${osFrameHtml}
       ${chromeHtml}
-      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
       ${taskbarHtml.bottom}
     </div>
   </div>

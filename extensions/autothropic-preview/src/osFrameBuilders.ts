@@ -333,7 +333,8 @@ function buildWindows11Taskbar(): string {
  * and Windows has bottom-only taskbar.
  */
 export function buildTaskbarHtml(config: PreviewConfig): { top: string; bottom: string } {
-  if (config.mode !== 'desktop' || !config.showTaskbar || config.osFrame === 'none') {
+  const hasTaskbarChrome = config.browserChrome === 'chrome' || config.browserChrome === 'edge';
+  if (config.mode !== 'desktop' || !config.showTaskbar || config.osFrame === 'none' || !hasTaskbarChrome) {
     return { top: '', bottom: '' };
   }
 

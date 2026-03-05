@@ -26,6 +26,22 @@
   var indicatorIdleTimer = null;
   var currentDisplayUrl = '';
   var urlEditorInput = null;
+  // @ts-ignore
+  var proxyOrigin = typeof PROXY_ORIGIN !== 'undefined' ? PROXY_ORIGIN : '';
+
+  /** Map a proxy URL (http://127.0.0.1:PROXY_PORT/path) back to the real dev server URL */
+  function toDisplayUrl(proxyUrl) {
+    if (!proxyOrigin || !currentDisplayUrl) { return proxyUrl; }
+    try {
+      var real = new URL(currentDisplayUrl);
+      var p = new URL(proxyUrl);
+      // Only rewrite if the URL is on the proxy origin
+      if (p.origin === new URL(proxyOrigin).origin || p.hostname === '127.0.0.1' && p.port === new URL(proxyOrigin).port) {
+        return real.origin + p.pathname + p.search + p.hash;
+      }
+    } catch(e) {}
+    return proxyUrl;
+  }
 
   // ------------------------------------------------------------------
   // Chrome positioning — overlay (absolute) vs flex based on bottom nav
@@ -111,6 +127,21 @@
 
   function cancelIndicatorIdleTimer() {
     if (indicatorIdleTimer) { clearTimeout(indicatorIdleTimer); indicatorIdleTimer = null; }
+  }
+
+  // ------------------------------------------------------------------
+  // Scroll direction handler — called from bridge messages or overlay
+  // ------------------------------------------------------------------
+
+  function handleScrollDir(dir) {
+    if (scrollCooldown) { return; }
+    if (scrollDebounce) { clearTimeout(scrollDebounce); }
+    scrollDebounce = setTimeout(function () {
+      var shouldCollapse = (dir === 'down');
+      if (shouldCollapse !== chromeCollapsed) {
+        setCollapsed(shouldCollapse);
+      }
+    }, 80);
   }
 
   // ------------------------------------------------------------------
@@ -683,26 +714,29 @@
         break;
 
       case 'refresh':
+      case 'reloadIframe':
         var iframe2 = document.getElementById('preview-iframe');
         if (iframe2 && iframe2.src) { iframe2.src = iframe2.src; }
         break;
+
+      // (closeMockPopups placeholder)
 
       case 'updateView':
         // Sync bottomNavDetected from extension's resolved state
         if (msg.hasBottomNav !== undefined) { bottomNavDetected = !!msg.hasBottomNav; }
         applyPartialUpdate(msg);
-        // Brief cooldown to ignore stale scroll events
+        // Brief cooldown — short to avoid blocking scroll responsiveness
         scrollCooldown = true;
-        setTimeout(function () { scrollCooldown = false; }, 500);
+        setTimeout(function () { scrollCooldown = false; }, 150);
         break;
 
       case 'rebuildFrame':
         // Sync bottomNavDetected from extension's resolved state
         if (msg.hasBottomNav !== undefined) { bottomNavDetected = !!msg.hasBottomNav; }
         rebuildFrame(msg);
-        // Brief cooldown to ignore stale scroll events
+        // Brief cooldown — short to avoid blocking scroll responsiveness
         scrollCooldown = true;
-        setTimeout(function () { scrollCooldown = false; }, 500);
+        setTimeout(function () { scrollCooldown = false; }, 150);
         break;
 
       case 'setPageBgColor':
@@ -731,14 +765,7 @@
 
       // --- Bridge messages from the embedded page (via proxy injection) ---
       case '__bridge_scroll':
-        if (scrollCooldown) { break; }
-        var shouldCollapse = msg.dir === 'down';
-        if (scrollDebounce) { clearTimeout(scrollDebounce); }
-        scrollDebounce = setTimeout(function () {
-          if (shouldCollapse !== chromeCollapsed) {
-            setCollapsed(shouldCollapse);
-          }
-        }, 50);
+        handleScrollDir(msg.dir);
         break;
 
       case '__bridge_meta':
@@ -780,15 +807,16 @@
         break;
 
       case '__bridge_nav':
-        // SPA navigation detected — update chrome hostname + tab title
+        // SPA navigation detected — map proxy URL back to real dev server URL
         try {
-          var navUrl = new URL(msg.url);
-          var newHostname = navUrl.hostname;
+          var realNavUrl = toDisplayUrl(msg.url);
+          var navUrlParsed = new URL(realNavUrl);
+          var newHostname = navUrlParsed.hostname;
           var spaHostnameEls = document.querySelectorAll('[data-chrome-hostname]');
           for (var si = 0; si < spaHostnameEls.length; si++) {
             spaHostnameEls[si].textContent = newHostname;
           }
-          currentDisplayUrl = msg.url;
+          currentDisplayUrl = realNavUrl;
         } catch(ne) {}
         if (msg.title) {
           var spaTabTitle = document.querySelector('[data-chrome-tab-title]');
@@ -796,6 +824,12 @@
         }
         // Forward to extension for state tracking
         vscode.postMessage({type: 'spaNavigation', url: msg.url, title: msg.title || ''});
+        break;
+
+      case '__bridge_open_external':
+        if (msg.url) {
+          vscode.postMessage({type: 'openExternal', url: msg.url});
+        }
         break;
     }
   });
@@ -942,6 +976,16 @@
   // ------------------------------------------------------------------
 
   vscode.postMessage({ type: 'ready' });
+
+  // ------------------------------------------------------------------
+  // Direct wheel listener on the webview — backup for bridge messages.
+  // Wheel events from the iframe bubble up to the parent document in
+  // same-origin contexts (proxy makes it same-origin).
+  // ------------------------------------------------------------------
+  document.addEventListener('wheel', function (e) {
+    if (Math.abs(e.deltaY) < 5) { return; }
+    handleScrollDir(e.deltaY > 0 ? 'down' : 'up');
+  }, { passive: true });
 
   // Apply initial scaling and empty state
   requestAnimationFrame(function () {

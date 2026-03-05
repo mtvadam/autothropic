@@ -34,12 +34,13 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentSession
     const themeColor = new vscode.ThemeColor(themeColorId);
 
     const iconName = session.status === 'running' ? 'sync~spin'
+      : session.status === 'input_needed' ? 'bell'
       : session.status === 'paused' ? 'debug-pause'
       : session.status === 'exited' ? 'debug-disconnect'
       : session.status === 'error' ? 'error'
       : 'robot';
 
-    item.description = session.status;
+    item.description = session.status === 'input_needed' ? 'input needed' : session.status;
     item.tooltip = new vscode.MarkdownString(
       `**${session.name}** — ${session.status}\n\n` +
       (session.systemPrompt ? `*Role:* ${session.systemPrompt.slice(0, 100)}${session.systemPrompt.length > 100 ? '...' : ''}\n\n` : '') +

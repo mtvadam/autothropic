@@ -129,7 +129,7 @@
     el.dataset.nodeId = session.id;
     el.style.setProperty('--node-color', session.color);
 
-    if (needsInput) {
+    if (needsInput || session.status === 'input_needed') {
       el.style.animation = 'input-pulse 1.5s ease-in-out infinite';
       el.style.setProperty('--pulse-color', '#d4a04a66');
     } else if (session.status === 'running') {
@@ -152,12 +152,12 @@
     }
 
     const dot = document.createElement('span');
-    dot.className = 'status-dot' + (session.status === 'running' ? ' running' : '');
+    dot.className = 'status-dot' + (session.status === 'running' ? ' running' : session.status === 'input_needed' ? ' running' : '');
     dot.style.background = statusColor(session.status);
     header.appendChild(dot);
 
-    // Needs-input bell icon
-    if (needsInput) {
+    // Needs-input bell icon (from needsInput flag or input_needed status)
+    if (needsInput || session.status === 'input_needed') {
       const bell = document.createElement('span');
       bell.className = 'input-bell';
       bell.textContent = '🔔';
@@ -203,7 +203,7 @@
 
     const status = document.createElement('span');
     status.className = 'node-status';
-    status.textContent = session.status;
+    status.textContent = session.status === 'input_needed' ? 'input needed' : session.status;
     header.appendChild(status);
 
     el.appendChild(header);
@@ -326,7 +326,7 @@
     const gridPath = document.createElementNS(ns, 'path');
     gridPath.setAttribute('d', 'M 20 0 L 0 0 0 20');
     gridPath.setAttribute('fill', 'none');
-    gridPath.setAttribute('stroke', '#232320');
+    gridPath.setAttribute('stroke', getComputedStyle(document.documentElement).getPropertyValue('--g-border').trim() || '#232320');
     gridPath.setAttribute('stroke-width', '0.5');
     pattern.appendChild(gridPath);
     defs.appendChild(pattern);
@@ -364,7 +364,7 @@
       const shadow = document.createElementNS(ns, 'path');
       shadow.setAttribute('d', pathD);
       shadow.setAttribute('fill', 'none');
-      shadow.setAttribute('stroke', '#000');
+      shadow.setAttribute('stroke', getComputedStyle(document.documentElement).getPropertyValue('--g-bg').trim() || '#000');
       shadow.setAttribute('stroke-width', '4');
       shadow.setAttribute('stroke-opacity', '0.2');
       g.appendChild(shadow);
@@ -388,7 +388,7 @@
       const edgePath = document.createElementNS(ns, 'path');
       edgePath.setAttribute('d', pathD);
       edgePath.setAttribute('fill', 'none');
-      edgePath.setAttribute('stroke', isActive ? '#d97757' : '#5a5850');
+      edgePath.setAttribute('stroke', isActive ? '#d97757' : (getComputedStyle(document.documentElement).getPropertyValue('--g-fg-dimmer').trim() || '#5a5850'));
       edgePath.setAttribute('stroke-width', isActive ? '3' : '2');
       if (!isActive) edgePath.setAttribute('stroke-dasharray', '6 4');
       edgePath.setAttribute('marker-end', 'url(#arrowhead)');
@@ -428,7 +428,7 @@
         text.setAttribute('x', String(midX));
         text.setAttribute('y', String(midY));
         text.setAttribute('text-anchor', 'middle');
-        text.setAttribute('fill', '#888');
+        text.setAttribute('fill', getComputedStyle(document.documentElement).getPropertyValue('--g-fg-dim').trim() || '#888');
         text.setAttribute('font-size', '9');
         text.setAttribute('font-family', 'monospace');
         text.style.pointerEvents = 'none';
@@ -918,7 +918,10 @@
   function updateStats() {
     const active = sessions.filter(s => s.status === 'running').length;
     const idle = sessions.filter(s => s.status === 'waiting').length;
-    statsEl.textContent = `${active} active · ${idle} idle`;
+    const inputNeeded = sessions.filter(s => s.status === 'input_needed').length;
+    let statsText = `${active} active · ${idle} idle`;
+    if (inputNeeded > 0) { statsText += ` · ${inputNeeded} input needed`; }
+    statsEl.textContent = statsText;
     idleCountEl.textContent = `${idle} idle`;
   }
 
@@ -1200,6 +1203,7 @@
     switch (status) {
       case 'running': return '#57ab5a';
       case 'waiting': return '#539bf5';
+      case 'input_needed': return '#d4a04a';
       case 'paused': return '#d4a04a';
       case 'error': return '#e5534b';
       case 'exited': return '#e5534b';

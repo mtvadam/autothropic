@@ -455,6 +455,41 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}, 2500);
 
+	// Register terminal profile — "+" in terminal panel spawns an agent via session manager
+	context.subscriptions.push(
+		vscode.window.registerTerminalProfileProvider('autothropic.agentTerminal', {
+			provideTerminalProfile(): vscode.ProviderResult<vscode.TerminalProfile> {
+				const cwd = vscode.workspace.workspaceFolders?.[0]?.uri;
+				return new vscode.TerminalProfile({
+					name: `Agent ${sessionManager.nextAgentNumber()}`,
+					shellPath: 'claude',
+					shellArgs: [],
+					cwd,
+					iconPath: new vscode.ThemeIcon('robot'),
+					env: { CLAUDECODE: '' },
+				});
+			}
+		})
+	);
+
+	// Adopt terminals created by our profile into the session manager
+	context.subscriptions.push(
+		vscode.window.onDidOpenTerminal((terminal) => {
+			// Check if this terminal was created by our profile (runs claude directly)
+			const creationOpts = (terminal as any).creationOptions;
+			if (creationOpts?.shellPath === 'claude' && !sessionManager.getSessionByTerminal(terminal)) {
+				sessionManager.adoptTerminal(terminal);
+			}
+		})
+	);
+
+	// Set our agent profile as the default terminal so "+" always spawns agents
+	const termConfig = vscode.workspace.getConfiguration('terminal.integrated');
+	const currentDefault = termConfig.get<string>('defaultProfile.windows');
+	if (currentDefault !== 'Autothropic Agent') {
+		termConfig.update('defaultProfile.windows', 'Autothropic Agent', vscode.ConfigurationTarget.Global).then(undefined, () => {});
+	}
+
 	// Terminal cleanup
 	context.subscriptions.push(
 		vscode.window.onDidCloseTerminal((terminal) => {
@@ -482,7 +517,12 @@ function updateStatusBar(sessionManager: SessionManager): void {
 	}
 	const active = sessions.filter(s => s.status === 'running').length;
 	const idle = sessions.filter(s => s.status === 'waiting').length;
-	statusBarItem.text = `$(hubot) ${active} active / ${idle} idle`;
+	const inputNeeded = sessions.filter(s => s.status === 'input_needed').length;
+	let text = `$(hubot) ${active} active / ${idle} idle`;
+	if (inputNeeded > 0) {
+		text += ` / ${inputNeeded} $(bell)`;
+	}
+	statusBarItem.text = text;
 	statusBarItem.tooltip = `${sessions.length} total agents\nClick to open graph`;
 	statusBarItem.show();
 }

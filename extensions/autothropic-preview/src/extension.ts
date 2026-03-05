@@ -1,15 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import { PreviewPanel } from './previewPanel';
 import { ClipEditor } from './clipPicker';
 import { ImageEditor } from './imageEditor';
 
 let previewUrl: string | null = null;
 let previewUrlManual = false;
 let urlDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-let panelListenersWired = false;
-let clipBufferStarted = false;
 
 // Build terminal management
 let _buildTerminal: vscode.Terminal | undefined;
@@ -29,31 +26,24 @@ export function activate(context: vscode.ExtensionContext) {
     await sendFilesToAgent(filePaths, agentId);
   });
 
-  // Open preview command
+  // Open preview command — delegates to core EditorPane
   context.subscriptions.push(
     vscode.commands.registerCommand('autothropic.preview.open', async () => {
-      const panel = await PreviewPanel.createOrShow(context.extensionUri, context);
-      setupPanelListeners(panel, clipEditor, imageEditor);
+      await vscode.commands.executeCommand('_autothropic.preview.open');
     })
   );
 
   // Refresh command
   context.subscriptions.push(
     vscode.commands.registerCommand('autothropic.preview.refresh', () => {
-      const panel = PreviewPanel.getInstance();
-      if (panel) { panel.refresh(); }
+      vscode.commands.executeCommand('_autothropic.preview.reload');
     })
   );
 
-  // Screenshot command
+  // Screenshot command — uses core webview capturePage
   context.subscriptions.push(
     vscode.commands.registerCommand('autothropic.preview.screenshot', async () => {
-      const panel = PreviewPanel.getInstance();
-      if (!panel) {
-        vscode.window.showWarningMessage('Open preview first');
-        return;
-      }
-      await takeScreenshot(panel, imageEditor);
+      await takeScreenshot(imageEditor);
     })
   );
 
@@ -75,20 +65,35 @@ export function activate(context: vscode.ExtensionContext) {
         if (urlDebounceTimer) { clearTimeout(urlDebounceTimer); }
         urlDebounceTimer = setTimeout(() => {
           previewUrl = url;
-          const panel = PreviewPanel.getInstance();
-          if (panel) {
-            panel.setUrl(url);
-            startClipBufferIfNeeded(panel);
-          }
-        }, 800);
+          // Send to core preview EditorPane (real Chromium webview)
+          vscode.commands.executeCommand('_autothropic.preview.setUrl', url);
+        }, 200);
       }
     })
   );
 
-  // Auto-open preview panel
-  PreviewPanel.createOrShow(context.extensionUri, context).then(
-    (panel) => setupPanelListeners(panel, clipEditor, imageEditor),
-    (err) => console.error('[autothropic-preview] Failed to create panel:', err),
+  // Auto-open core preview EditorPane (not the old webview panel)
+  vscode.commands.executeCommand('_autothropic.preview.open').then(
+    () => {},
+    (err) => console.error('[autothropic-preview] Failed to open core preview:', err),
+  );
+
+  // Restart build command — kills existing build terminal and re-runs
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autothropic.preview.restartBuild', async () => {
+      _buildTerminalReady = false;
+      if (_buildTerminal) {
+        _buildTerminal.dispose();
+        _buildTerminal = undefined;
+      }
+      // Kill any lingering build terminals
+      for (const t of vscode.window.terminals) {
+        if (t.name === BUILD_TERMINAL_NAME) { t.dispose(); }
+      }
+      // Small delay for cleanup, then restart
+      await new Promise(r => setTimeout(r, 300));
+      await ensureSingleBuildTerminal();
+    })
   );
 
   // Build terminal auto-start
@@ -127,44 +132,12 @@ export function activate(context: vscode.ExtensionContext) {
   });
 }
 
-// --- Clip Buffer ---
-
-async function startClipBufferIfNeeded(panel: PreviewPanel): Promise<void> {
-  if (clipBufferStarted) { return; }
-  const port = panel.getProxyPort();
-  if (!port) { return; }
-
-  try {
-    const status = await vscode.commands.executeCommand<{ active: boolean }>(
-      '_autothropic.capture.getClipStatus'
-    );
-    if (status?.active) {
-      clipBufferStarted = true;
-      return;
-    }
-  } catch { /* service not available yet */ }
-
-  try {
-    await vscode.commands.executeCommand('_autothropic.capture.startClipBuffer', port);
-    clipBufferStarted = true;
-  } catch {
-    // Capture service may not be available in web or test environments
-  }
-}
-
 // --- Screenshot → Send to Agent ---
 
-async function takeScreenshot(panel: PreviewPanel, imageEditor: ImageEditor): Promise<void> {
-  const port = panel.getProxyPort();
-  if (!port) {
-    vscode.window.showWarningMessage('Preview proxy not running');
-    return;
-  }
-
+async function takeScreenshot(imageEditor: ImageEditor): Promise<void> {
   try {
-    const deviceInfo = panel.getCurrentDeviceInfo();
-    const result = await vscode.commands.executeCommand<{ dataUrl: string }>(
-      '_autothropic.capture.screenshot', port, deviceInfo
+    const result = await vscode.commands.executeCommand<{ dataUrl: string } | null>(
+      '_autothropic.capture.screenshot'
     );
     if (result?.dataUrl) {
       const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -174,8 +147,10 @@ async function takeScreenshot(panel: PreviewPanel, imageEditor: ImageEditor): Pr
       const filePath = path.join(tmpDir, `preview-${Date.now()}.png`);
       await vscode.workspace.fs.writeFile(vscode.Uri.file(filePath), bytes);
 
-      // Open in image editor for review/annotation instead of auto-sending
+      // Open in image editor for review/annotation
       await imageEditor.show(filePath);
+    } else {
+      vscode.window.showWarningMessage('Screenshot failed — preview not ready');
     }
   } catch (err) {
     vscode.window.showErrorMessage(`Screenshot failed: ${err}`);
@@ -214,37 +189,6 @@ async function sendFilesToAgent(filePaths: string[], agentId?: string): Promise<
     await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(fp));
   }
   vscode.window.showInformationMessage(`Saved ${filePaths.length} frame(s)`);
-}
-
-// --- Panel Listeners ---
-
-function setupPanelListeners(panel: PreviewPanel, clipEditor: ClipEditor, imageEditor: ImageEditor): void {
-  if (panelListenersWired) { return; }
-  panelListenersWired = true;
-
-  const savedUrl = panel.getCurrentUrl();
-  if (savedUrl && !previewUrl) {
-    previewUrl = savedUrl;
-    startClipBufferIfNeeded(panel);
-  }
-
-  panel.onDispose(() => {
-    panelListenersWired = false;
-    previewUrlManual = false;
-    clipBufferStarted = false;
-  });
-
-  panel.onManualUrl((url) => {
-    previewUrl = url;
-    previewUrlManual = true;
-    startClipBufferIfNeeded(panel);
-  });
-
-  panel.onScreenshot(() => takeScreenshot(panel, imageEditor));
-
-  panel.onOpenClipEditor(async () => {
-    await clipEditor.show(3);
-  });
 }
 
 // --- Build Terminal ---

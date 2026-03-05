@@ -408,8 +408,36 @@ export class CodeApplication extends Disposable {
 				this.auxiliaryWindowsMainService?.registerWindow(contents);
 			}
 
-			// Block any in-page navigation
+			// Autothropic Preview: allow navigation and popups for the preview
+			// webview and any OAuth/auth popup windows it spawns.
+			// Detect by checking if this webContents belongs to our preview
+			// webview session (partition: persist:autothropic-preview) or if
+			// it's a <webview> guest.
+			const isPreviewContent = () => {
+				try {
+					const url = contents.getURL();
+					// Check if this is a webview guest (type 'webview') with our partition
+					if ((contents as any).getType?.() === 'webview') {
+						return true; // Allow all webview guests (our preview webview)
+					}
+					// Check if URL is localhost (dev server content in preview)
+					if (url && (url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1'))) {
+						return true;
+					}
+					// Check if this was opened by a preview webview (OAuth popup)
+					if (contents.opener && contents.opener.url &&
+						(contents.opener.url.startsWith('http://localhost') || contents.opener.url.startsWith('http://127.0.0.1'))) {
+						return true;
+					}
+				} catch { /* ignore */ }
+				return false;
+			};
+
+			// Block any in-page navigation (except for preview webview contents)
 			contents.on('will-navigate', event => {
+				if (isPreviewContent()) {
+					return; // Allow navigation in preview webview
+				}
 				this.logService.error('webContents#will-navigate: Prevented webcontent navigation');
 
 				event.preventDefault();
@@ -417,6 +445,7 @@ export class CodeApplication extends Disposable {
 
 			// All Windows: only allow about:blank auxiliary windows to open
 			// For all other URLs, delegate to the OS.
+			// Exception: preview webview popups (OAuth, auth) open as real windows.
 			contents.setWindowOpenHandler(details => {
 
 				// about:blank windows can open as window witho our default options
@@ -426,6 +455,24 @@ export class CodeApplication extends Disposable {
 					return {
 						action: 'allow',
 						overrideBrowserWindowOptions: this.auxiliaryWindowsMainService?.createWindow(details)
+					};
+				}
+
+				// Preview webview popups: allow OAuth/auth flows to open as real windows
+				if (isPreviewContent()) {
+					this.logService.trace(`[preview] webContents#setWindowOpenHandler: Allowing preview popup for ${details.url}`);
+					return {
+						action: 'allow',
+						overrideBrowserWindowOptions: {
+							width: 500,
+							height: 700,
+							autoHideMenuBar: true,
+							webPreferences: {
+								nodeIntegration: false,
+								contextIsolation: true,
+								sandbox: true,
+							}
+						}
 					};
 				}
 

@@ -9,6 +9,26 @@ import { ILifecycleService, LifecyclePhase } from '../../../services/lifecycle/c
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { IWorkbenchLayoutService, Parts, Position } from '../../../services/layout/browser/layoutService.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
+import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
+import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
+import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { PreviewEditor } from './preview/previewEditor.js';
+import { PreviewEditorInput } from './preview/previewEditorInput.js';
+import { PREVIEW_EDITOR_ID, IPreviewService } from './preview/preview.js';
+import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+
+// Import to trigger service registration side effect
+import './preview/previewService.js';
+
+// Import CSS
+import './preview/media/preview.css';
+
+// ---------------------------------------------------------------------------
+// Layout contribution (unchanged)
+// ---------------------------------------------------------------------------
 
 const LAYOUT_INITIALIZED_KEY = 'autothropic.layoutInitialized';
 
@@ -34,8 +54,8 @@ class AutothropicLayoutContribution extends Disposable implements IWorkbenchCont
 	private async initialize(): Promise<void> {
 		await this.lifecycleService.when(LifecyclePhase.Restored);
 
-		const alreadyDone = this.storageService.getBoolean(LAYOUT_INITIALIZED_KEY, StorageScope.WORKSPACE, false);
-		if (alreadyDone) {
+		const layoutVersion = this.storageService.getNumber(LAYOUT_INITIALIZED_KEY, StorageScope.WORKSPACE, 0);
+		if (layoutVersion >= 2) {
 			return;
 		}
 
@@ -49,16 +69,141 @@ class AutothropicLayoutContribution extends Disposable implements IWorkbenchCont
 			this.layoutService.setPanelPosition(Position.BOTTOM);
 		}
 
-		// Focus the graph view in the panel
+		// Focus the terminal in the panel (so build output is visible immediately)
 		try {
-			await this.viewsService.openView('autothropic.graphView', false);
+			await this.viewsService.openView('terminal', false);
 		} catch {
-			// Graph extension may not be ready yet - non-critical
+			// Terminal may not be ready yet - non-critical
 		}
 
-		// Mark as initialized so we don't repeat on next startup
-		this.storageService.store(LAYOUT_INITIALIZED_KEY, true, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		// Mark as initialized (version 2 = terminal default)
+		this.storageService.store(LAYOUT_INITIALIZED_KEY, 2, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 }
 
 registerWorkbenchContribution2(AutothropicLayoutContribution.ID, AutothropicLayoutContribution, WorkbenchPhase.AfterRestored);
+
+// ---------------------------------------------------------------------------
+// Preview contribution -- auto-opens preview editor after restore
+// ---------------------------------------------------------------------------
+
+class AutothropicPreviewContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.autothropicPreview';
+
+	constructor(
+		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@IEditorService private readonly editorService: IEditorService,
+	) {
+		super();
+		this.autoOpenPreview();
+	}
+
+	private async autoOpenPreview(): Promise<void> {
+		await this.lifecycleService.when(LifecyclePhase.Restored);
+
+		// Auto-open preview tab
+		const input = PreviewEditorInput.getInstance();
+		await this.editorService.openEditor(input, { pinned: true, preserveFocus: true });
+	}
+}
+
+registerWorkbenchContribution2(AutothropicPreviewContribution.ID, AutothropicPreviewContribution, WorkbenchPhase.AfterRestored);
+
+// ---------------------------------------------------------------------------
+// Register EditorPane
+// ---------------------------------------------------------------------------
+
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		PreviewEditor,
+		PREVIEW_EDITOR_ID,
+		'Preview',
+	),
+	[new SyncDescriptor(PreviewEditorInput)],
+);
+
+// ---------------------------------------------------------------------------
+// Register EditorSerializer (for persistence across reloads)
+// ---------------------------------------------------------------------------
+
+class PreviewEditorInputSerializer {
+	canSerialize(_editorInput: PreviewEditorInput): boolean {
+		return true;
+	}
+
+	serialize(_editorInput: PreviewEditorInput): string {
+		return '{}';
+	}
+
+	deserialize(_instantiationService: IInstantiationService, _serializedEditorInput: string): PreviewEditorInput {
+		return PreviewEditorInput.getInstance();
+	}
+}
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
+	.registerEditorSerializer(PreviewEditorInput.ID, PreviewEditorInputSerializer);
+
+// ---------------------------------------------------------------------------
+// Register commands (extension → core bridge)
+// ---------------------------------------------------------------------------
+
+CommandsRegistry.registerCommand('_autothropic.preview.open', (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	previewService.openPreview();
+});
+
+CommandsRegistry.registerCommand('_autothropic.preview.setUrl', (accessor, url: string) => {
+	const previewService = accessor.get(IPreviewService);
+	previewService.setUrl(url);
+});
+
+CommandsRegistry.registerCommand('_autothropic.preview.reload', (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	previewService.reload();
+});
+
+CommandsRegistry.registerCommand('_autothropic.preview.openDevTools', (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	previewService.openDevTools();
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.screenshot', async (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	const dataUrl = await previewService.captureScreenshot();
+	return dataUrl ? { dataUrl } : null;
+});
+
+// ---------------------------------------------------------------------------
+// Clip buffer commands (renderer-side, using webview.capturePage)
+// ---------------------------------------------------------------------------
+
+CommandsRegistry.registerCommand('_autothropic.capture.startClipBuffer', (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	previewService.startClipBuffer();
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.stopClipBuffer', (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	previewService.stopClipBuffer();
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.getClipThumbnails', (accessor, seconds: number) => {
+	const previewService = accessor.get(IPreviewService);
+	return previewService.getClipThumbnails(seconds);
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.getSuggestedIndices', (accessor, seconds: number, maxFrames: number) => {
+	const previewService = accessor.get(IPreviewService);
+	return previewService.getSuggestedIndices(seconds, maxFrames);
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.grabSelected', (accessor, indices: number[]) => {
+	const previewService = accessor.get(IPreviewService);
+	const dataUrls = previewService.grabSelectedDataUrls(indices);
+	return { filePaths: [], dataUrls };
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.getClipStatus', (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	return previewService.getClipStatus();
+});

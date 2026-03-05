@@ -16,7 +16,7 @@ html,body,*{scrollbar-width:none!important;}
 if(window.__autothropicBridge)return;
 window.__autothropicBridge=true;
 
-/* ── iOS-style scroll indicator — thin bar, appears on scroll, fades after idle ── */
+/* ── iOS-style scroll indicator ── */
 var scrollInd=document.createElement('div');
 scrollInd.setAttribute('data-autothropic-scrollbar','');
 scrollInd.style.cssText='position:fixed;right:2px;top:0;width:4px;border-radius:2px;background:rgba(128,128,128,0.45);opacity:0;transition:opacity 0.3s ease;z-index:2147483647;pointer-events:none;';
@@ -25,8 +25,8 @@ var indTimer=null;
 function updateScrollInd(){
   var docH=Math.max(document.documentElement.scrollHeight,document.body.scrollHeight);
   var viewH=window.innerHeight;
-  if(docH<=viewH){scrollInd.style.opacity='0';return;}
   var scrollTop=window.scrollY||document.documentElement.scrollTop||0;
+  if(docH<=viewH){scrollInd.style.opacity='0';return;}
   var trackH=viewH-8;
   var thumbH=Math.max(30,(viewH/docH)*trackH);
   var thumbTop=4+(scrollTop/(docH-viewH))*(trackH-thumbH);
@@ -37,22 +37,38 @@ function updateScrollInd(){
   indTimer=setTimeout(function(){scrollInd.style.opacity='0';},1500);
 }
 
-/* ── Scroll watcher — exact copy from original PreviewComposite.tsx ── */
-var lastY=window.scrollY||0,lastDir='',accumulated=0;
-function checkScroll(){
-  var y=window.scrollY||document.documentElement.scrollTop||document.body.scrollTop||0;
-  var diff=y-lastY;lastY=y;
+/* ── Scroll direction detection — SIMPLIFIED ──
+   Uses wheel events as primary (always bubble, always fire).
+   scroll event as secondary for position-based indicator. */
+var lastDir='';
+var wheelAccum=0;
+
+/* Primary: wheel events — always bubble, work in ALL contexts including
+   container-scrolled SPAs. deltaY directly gives scroll intent direction. */
+document.addEventListener('wheel',function(e){
+  wheelAccum+=e.deltaY;
+},{passive:true});
+
+/* Check direction every 100ms from accumulated wheel deltas */
+setInterval(function(){
+  if(wheelAccum===0)return;
+  var dir=wheelAccum>0?'down':'up';
+  wheelAccum=0;
+  if(dir!==lastDir){
+    lastDir=dir;
+    window.parent.postMessage({type:'__bridge_scroll',dir:dir},'*');
+  }
+},100);
+
+/* Secondary: scroll event — updates indicator + resets to 'up' at top */
+window.addEventListener('scroll',function(){
   updateScrollInd();
-  if(y<=5){if(lastDir!=='up'){lastDir='up';accumulated=0;window.parent.postMessage({type:'__bridge_scroll',dir:'up'},'*');}return;}
-  if((diff>0&&accumulated<0)||(diff<0&&accumulated>0))accumulated=0;
-  accumulated+=diff;
-  var dir='';
-  if(accumulated>8)dir='down';
-  else if(accumulated<-8)dir='up';
-  if(dir&&dir!==lastDir){lastDir=dir;accumulated=0;window.parent.postMessage({type:'__bridge_scroll',dir:dir},'*');}
-}
-window.addEventListener('scroll',checkScroll,{passive:true});
-document.addEventListener('scroll',checkScroll,{passive:true});
+  var y=window.scrollY||0;
+  if(y<=5&&lastDir!=='up'){
+    lastDir='up';
+    window.parent.postMessage({type:'__bridge_scroll',dir:'up'},'*');
+  }
+},{passive:true});
 
 /* ── Page meta extraction ── */
 function extractMeta(){
@@ -65,11 +81,35 @@ function extractMeta(){
       if(bg&&bg!=='rgba(0, 0, 0, 0)'&&bg!=='transparent')tc=bg;
       else tc='#ffffff';}}
   var title=document.title||'';
-  var favicon='';
+  var faviconUrl='';
   var il=document.querySelector('link[rel="icon"],link[rel="shortcut icon"],link[rel="apple-touch-icon"]');
-  if(il)favicon=il.href||'';
-  if(!favicon)favicon=location.origin+'/favicon.ico';
-  window.parent.postMessage({type:'__bridge_meta',bgColor:tc,title:title,favicon:favicon},'*');
+  if(il)faviconUrl=il.href||'';
+  if(!faviconUrl)faviconUrl=location.origin+'/favicon.ico';
+  // Convert favicon to data URI so it works inside webview CSP
+  (function(url){
+    if(url.indexOf('data:')===0){
+      window.parent.postMessage({type:'__bridge_meta',bgColor:tc,title:title,favicon:url},'*');
+      return;
+    }
+    var x=new XMLHttpRequest();
+    x.open('GET',url,true);
+    x.responseType='blob';
+    x.onload=function(){
+      if(x.status===200&&x.response){
+        var r=new FileReader();
+        r.onloadend=function(){
+          window.parent.postMessage({type:'__bridge_meta',bgColor:tc,title:title,favicon:r.result||''},'*');
+        };
+        r.readAsDataURL(x.response);
+      } else {
+        window.parent.postMessage({type:'__bridge_meta',bgColor:tc,title:title,favicon:''},'*');
+      }
+    };
+    x.onerror=function(){
+      window.parent.postMessage({type:'__bridge_meta',bgColor:tc,title:title,favicon:''},'*');
+    };
+    x.send();
+  })(faviconUrl);
 }
 setTimeout(extractMeta,300);
 
@@ -98,6 +138,21 @@ setInterval(detectNav,2000);
 var navTimer=null;
 var obs=new MutationObserver(function(){if(navTimer)clearTimeout(navTimer);navTimer=setTimeout(detectNav,300);});
 if(document.body)obs.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class']});
+
+/* ── Intercept popups — return mock so Firebase doesn't show "blocked" error ── */
+var origOpen=window.open;
+window.open=function(url,target,features){
+  if(url){
+    try{
+      var u=new URL(url,location.href);
+      var mock={closed:false,close:function(){mock.closed=true;},focus:function(){},blur:function(){},postMessage:function(){},location:{href:u.href}};
+      window.parent.postMessage({type:'__bridge_open_external',url:u.href},'*');
+      return mock;
+    }catch(e){}
+  }
+  if(origOpen)return origOpen.call(window,url,target,features);
+  return null;
+};
 
 /* ── Navigation commands from parent (back/forward) ── */
 window.addEventListener('message',function(e){

@@ -48,6 +48,8 @@ export class ImageEditor {
         },
       );
 
+      this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'screenshot-icon.svg');
+
       this.panel.onDidDispose(() => {
         this.panel = undefined;
       });
@@ -93,11 +95,21 @@ export class ImageEditor {
   }
 
   private async handleCopy(dataUrl: string): Promise<void> {
-    // Save to temp, then copy via clipboard command
-    const filePath = await this.saveDataUrlToTemp(dataUrl);
-    if (filePath) {
-      await vscode.env.clipboard.writeText(filePath);
-      vscode.window.showInformationMessage('Screenshot path copied to clipboard');
+    try {
+      // Copy actual image to system clipboard using Electron's nativeImage
+      const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+      const buffer = Buffer.from(base64, 'base64');
+      const { clipboard, nativeImage } = require('electron');
+      const img = nativeImage.createFromBuffer(buffer);
+      clipboard.writeImage(img);
+      vscode.window.showInformationMessage('Image copied to clipboard');
+    } catch {
+      // Fallback: save to temp and copy path
+      const filePath = await this.saveDataUrlToTemp(dataUrl);
+      if (filePath) {
+        await vscode.env.clipboard.writeText(filePath);
+        vscode.window.showInformationMessage('Screenshot path copied to clipboard');
+      }
     }
   }
 
@@ -128,8 +140,8 @@ export class ImageEditor {
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-  background: #111110;
-  color: #a8a69e;
+  background: var(--vscode-editor-background, #111110);
+  color: var(--vscode-foreground, #a8a69e);
   font-family: system-ui, -apple-system, sans-serif;
   display: flex;
   flex-direction: column;
@@ -144,7 +156,7 @@ body {
   align-items: center;
   gap: 4px;
   padding: 6px 12px;
-  border-bottom: 1px solid #2a2a26;
+  border-bottom: 1px solid var(--vscode-panel-border, #2a2a26);
   flex-shrink: 0;
   flex-wrap: wrap;
 }
@@ -156,7 +168,7 @@ body {
 .toolbar-sep {
   width: 1px;
   height: 20px;
-  background: #2a2a26;
+  background: var(--vscode-panel-border, #2a2a26);
   margin: 0 6px;
 }
 .tool-button {
@@ -164,7 +176,7 @@ body {
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: #a8a69e;
+  color: var(--vscode-foreground, #a8a69e);
   font-size: 11px;
   cursor: pointer;
   font-family: inherit;
@@ -172,7 +184,7 @@ body {
   align-items: center;
   gap: 4px;
 }
-.tool-button:hover { background: #232320; color: #e8e5de; }
+.tool-button:hover { background: var(--vscode-list-hoverBackground, #232320); color: var(--vscode-editor-foreground, #e8e5de); }
 .tool-button.active { background: #d97757; color: #f5f2eb; border-color: #d97757; }
 .tool-button svg { width: 14px; height: 14px; }
 
@@ -197,18 +209,39 @@ body {
 }
 
 /* Stroke width */
-.width-button {
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: #a8a69e;
+.width-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.width-group label {
   font-size: 10px;
+  color: var(--vscode-descriptionForeground, #7a7870);
+}
+.width-input {
+  width: 48px;
+  padding: 2px 4px;
+  border: 1px solid var(--vscode-panel-border, #2a2a26);
+  border-radius: 4px;
+  background: var(--vscode-input-background, #1c1c1a);
+  color: var(--vscode-input-foreground, #e8e5de);
+  font-size: 11px;
+  font-family: inherit;
+  text-align: center;
+}
+.width-input:focus { border-color: #d97757; outline: none; }
+.width-preset {
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-foreground, #a8a69e);
+  font-size: 9px;
   cursor: pointer;
   font-family: inherit;
 }
-.width-button:hover { background: #232320; }
-.width-button.active { background: #d97757; color: #f5f2eb; }
+.width-preset:hover { background: var(--vscode-list-hoverBackground, #232320); }
+.width-preset.active { background: #d97757; color: #f5f2eb; }
 
 /* --- Canvas area --- */
 .canvas-wrap {
@@ -239,7 +272,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-top: 1px solid #2a2a26;
+  border-top: 1px solid var(--vscode-panel-border, #2a2a26);
   flex-shrink: 0;
 }
 .action-btn {
@@ -248,18 +281,18 @@ body {
   font-size: 11px;
   cursor: pointer;
   font-family: inherit;
-  border: 1px solid #2a2a26;
-  background: #1c1c1a;
-  color: #a8a69e;
+  border: 1px solid var(--vscode-panel-border, #2a2a26);
+  background: var(--vscode-sideBar-background, #1c1c1a);
+  color: var(--vscode-foreground, #a8a69e);
 }
-.action-btn:hover { background: #232320; color: #e8e5de; }
+.action-btn:hover { background: var(--vscode-list-hoverBackground, #232320); color: var(--vscode-editor-foreground, #e8e5de); }
 .action-btn.danger { color: #e5534b; }
 .action-btn.danger:hover { background: #2a1515; }
 .spacer { flex: 1; }
 .agent-select {
-  background: #1c1c1a;
-  border: 1px solid #2a2a26;
-  color: #a8a69e;
+  background: var(--vscode-sideBar-background, #1c1c1a);
+  border: 1px solid var(--vscode-panel-border, #2a2a26);
+  color: var(--vscode-foreground, #a8a69e);
   padding: 5px 8px;
   border-radius: 5px;
   font-size: 11px;
@@ -284,7 +317,7 @@ body {
   display: none;
   z-index: 10;
 }
-.text-input-overlay input {
+.text-input-overlay textarea {
   background: rgba(0,0,0,0.7);
   border: 1px solid #d97757;
   color: #fff;
@@ -292,7 +325,40 @@ body {
   padding: 4px 8px;
   border-radius: 4px;
   outline: none;
-  min-width: 120px;
+  min-width: 160px;
+  min-height: 32px;
+  resize: both;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-weight: bold;
+  line-height: 1.3;
+}
+
+/* Color picker area */
+.color-picker-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.color-input {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--vscode-panel-border, #2a2a26);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Eraser cursor */
+.canvas-container.eraser-active { cursor: none !important; }
+.eraser-cursor {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid rgba(255,255,255,0.8);
+  border-radius: 50%;
+  z-index: 5;
+  display: none;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
 }
 </style>
 </head>
@@ -341,10 +407,16 @@ body {
 
     <div class="toolbar-sep"></div>
 
-    <div class="toolbar-group" id="widths">
-      <button class="width-button" data-width="2">Thin</button>
-      <button class="width-button active" data-width="4">Med</button>
-      <button class="width-button" data-width="8">Thick</button>
+    <div class="toolbar-group width-group" id="widths">
+      <label>Size:</label>
+      <input type="number" class="width-input" id="width-input" value="4" min="1" max="100" />
+      <span style="font-size:10px;color:var(--vscode-descriptionForeground,#7a7870)">px</span>
+      <button class="width-preset" data-width="1">1</button>
+      <button class="width-preset" data-width="2">2</button>
+      <button class="width-preset active" data-width="4">4</button>
+      <button class="width-preset" data-width="8">8</button>
+      <button class="width-preset" data-width="16">16</button>
+      <button class="width-preset" data-width="32">32</button>
     </div>
 
     <div class="toolbar-sep"></div>
@@ -367,8 +439,9 @@ body {
       <canvas id="draw-canvas"></canvas>
       <canvas id="preview-canvas"></canvas>
       <div class="text-input-overlay" id="text-input-overlay">
-        <input type="text" id="text-input" placeholder="Type text..." />
+        <textarea id="text-input" placeholder="Type text..." rows="1"></textarea>
       </div>
+      <div class="eraser-cursor" id="eraser-cursor"></div>
     </div>
   </div>
 
@@ -388,7 +461,7 @@ body {
     let currentTool = 'pen';
     let currentColor = '#ff3b30';
     let currentWidth = 4;
-    let operations = [];  // { type, points, color, width, text, x, y, ... }
+    let operations = [];  // { type, points, color, width, text, x, y, fontSize, ... }
     let redoStack = [];
     let isDrawing = false;
     let startX = 0, startY = 0;
@@ -404,6 +477,8 @@ body {
     const previewCtx = previewCanvas.getContext('2d');
     const container = document.getElementById('canvas-container');
     const wrap = document.getElementById('canvas-wrap');
+    const eraserCursor = document.getElementById('eraser-cursor');
+    const widthInput = document.getElementById('width-input');
 
     // --- Load image ---
     function loadImage(dataUrl) {
@@ -433,18 +508,37 @@ body {
 
     function redrawAll() {
       if (!img) return;
-      // Background
       bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
       bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
 
-      // Replay operations onto draw canvas
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
       for (const op of operations) {
         drawOperation(drawCtx, op);
       }
 
-      // Clear preview
       previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    }
+
+    // Redraw with eraser live preview: composites bg + draw + eraser preview
+    function redrawWithEraserPreview() {
+      if (!img) return;
+      // Draw bg + existing ops onto drawCanvas
+      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
+
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      for (const op of operations) {
+        drawOperation(drawCtx, op);
+      }
+      // Now apply the current eraser stroke to drawCanvas as a preview
+      if (currentPoints.length >= 2) {
+        drawOperation(drawCtx, {
+          type: 'eraser',
+          points: currentPoints,
+          color: currentColor,
+          width: currentWidth,
+        });
+      }
     }
 
     function drawOperation(ctx, op) {
@@ -487,7 +581,6 @@ body {
           ctx.moveTo(op.x1, op.y1);
           ctx.lineTo(op.x2, op.y2);
           ctx.stroke();
-          // Arrowhead
           ctx.beginPath();
           ctx.moveTo(op.x2, op.y2);
           ctx.lineTo(op.x2 - headLen * Math.cos(angle - Math.PI / 6), op.y2 - headLen * Math.sin(angle - Math.PI / 6));
@@ -497,9 +590,12 @@ body {
           break;
         }
         case 'text': {
-          const fontSize = Math.max(14, op.width * 4);
+          const fontSize = op.fontSize || Math.max(14, op.width * 4);
           ctx.font = 'bold ' + fontSize + 'px system-ui, -apple-system, sans-serif';
-          ctx.fillText(op.text, op.x, op.y);
+          const lines = (op.text || '').split('\\n');
+          for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], op.x, op.y + i * (fontSize * 1.3));
+          }
           break;
         }
         case 'eraser': {
@@ -516,6 +612,23 @@ body {
         }
       }
       ctx.restore();
+    }
+
+    // --- Eraser cursor ---
+    function updateEraserCursor(e) {
+      if (currentTool !== 'eraser') {
+        eraserCursor.style.display = 'none';
+        container.classList.remove('eraser-active');
+        return;
+      }
+      container.classList.add('eraser-active');
+      const rect = container.getBoundingClientRect();
+      const size = currentWidth * 4;
+      eraserCursor.style.display = 'block';
+      eraserCursor.style.width = size + 'px';
+      eraserCursor.style.height = size + 'px';
+      eraserCursor.style.left = (e.clientX - rect.left - size / 2) + 'px';
+      eraserCursor.style.top = (e.clientY - rect.top - size / 2) + 'px';
     }
 
     // --- Mouse events on preview canvas ---
@@ -538,15 +651,24 @@ body {
     });
 
     previewCanvas.addEventListener('mousemove', function(e) {
+      updateEraserCursor(e);
+
       if (!isDrawing) return;
       const pos = getCanvasPos(e);
 
+      if (currentTool === 'eraser') {
+        // Live eraser: draw directly onto drawCanvas composite
+        currentPoints.push({ x: pos.x, y: pos.y });
+        redrawWithEraserPreview();
+        return;
+      }
+
       previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
 
-      if (currentTool === 'pen' || currentTool === 'eraser') {
+      if (currentTool === 'pen') {
         currentPoints.push({ x: pos.x, y: pos.y });
         drawOperation(previewCtx, {
-          type: currentTool,
+          type: 'pen',
           points: currentPoints,
           color: currentColor,
           width: currentWidth,
@@ -586,9 +708,12 @@ body {
       const pos = getCanvasPos(e);
 
       let op = null;
-      if (currentTool === 'pen' || currentTool === 'eraser') {
+      if (currentTool === 'pen') {
         currentPoints.push({ x: pos.x, y: pos.y });
-        op = { type: currentTool, points: currentPoints.slice(), color: currentColor, width: currentWidth };
+        op = { type: 'pen', points: currentPoints.slice(), color: currentColor, width: currentWidth };
+      } else if (currentTool === 'eraser') {
+        currentPoints.push({ x: pos.x, y: pos.y });
+        op = { type: 'eraser', points: currentPoints.slice(), color: currentColor, width: currentWidth };
       } else if (currentTool === 'line') {
         op = { type: 'line', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth };
       } else if (currentTool === 'rect') {
@@ -607,9 +732,9 @@ body {
     });
 
     previewCanvas.addEventListener('mouseleave', function() {
+      eraserCursor.style.display = 'none';
       if (isDrawing) {
         isDrawing = false;
-        // Commit whatever we had
         if (currentTool === 'pen' || currentTool === 'eraser') {
           if (currentPoints.length > 1) {
             operations.push({ type: currentTool, points: currentPoints.slice(), color: currentColor, width: currentWidth });
@@ -625,27 +750,38 @@ body {
     function showTextInput(x, y) {
       const overlay = document.getElementById('text-input-overlay');
       const input = document.getElementById('text-input');
+      const fontSize = Math.max(14, currentWidth * 4);
       overlay.style.display = 'block';
       overlay.style.left = x + 'px';
       overlay.style.top = y + 'px';
       input.style.color = currentColor;
+      input.style.fontSize = fontSize + 'px';
       input.value = '';
-      input.focus();
+      // Delay focus so blur doesn't immediately fire
+      setTimeout(function() { input.focus(); }, 50);
+    }
+
+    function commitText() {
+      const overlay = document.getElementById('text-input-overlay');
+      const input = document.getElementById('text-input');
+      if (overlay.style.display === 'none') return;
+      const text = input.value.trim();
+      if (text) {
+        const x = parseInt(overlay.style.left);
+        const y = parseInt(overlay.style.top);
+        const fontSize = Math.max(14, currentWidth * 4);
+        operations.push({ type: 'text', text: text, x: x, y: y + fontSize, color: currentColor, width: currentWidth, fontSize: fontSize });
+        redoStack = [];
+        redrawAll();
+      }
+      overlay.style.display = 'none';
     }
 
     document.getElementById('text-input').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') {
+      e.stopPropagation(); // prevent tool shortcuts while typing
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        const text = e.target.value.trim();
-        if (text) {
-          const overlay = document.getElementById('text-input-overlay');
-          const x = parseInt(overlay.style.left);
-          const y = parseInt(overlay.style.top);
-          operations.push({ type: 'text', text: text, x: x, y: y, color: currentColor, width: currentWidth });
-          redoStack = [];
-          redrawAll();
-        }
-        document.getElementById('text-input-overlay').style.display = 'none';
+        commitText();
       }
       if (e.key === 'Escape') {
         document.getElementById('text-input-overlay').style.display = 'none';
@@ -653,7 +789,8 @@ body {
     });
 
     document.getElementById('text-input').addEventListener('blur', function() {
-      document.getElementById('text-input-overlay').style.display = 'none';
+      // Small delay so clicking away commits text instead of losing it
+      setTimeout(commitText, 150);
     });
 
     // --- Tool selection ---
@@ -663,6 +800,13 @@ body {
       currentTool = btn.dataset.tool;
       document.querySelectorAll('#tools .tool-button').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      // Update cursor
+      if (currentTool === 'eraser') {
+        container.classList.add('eraser-active');
+      } else {
+        container.classList.remove('eraser-active');
+        eraserCursor.style.display = 'none';
+      }
     });
 
     // --- Color selection ---
@@ -681,11 +825,23 @@ body {
     });
 
     // --- Width selection ---
+    widthInput.addEventListener('input', function(e) {
+      const v = parseInt(e.target.value);
+      if (!isNaN(v) && v >= 1 && v <= 100) {
+        currentWidth = v;
+        // Highlight matching preset if any
+        document.querySelectorAll('.width-preset').forEach(b => {
+          b.classList.toggle('active', parseInt(b.dataset.width) === v);
+        });
+      }
+    });
+
     document.getElementById('widths').addEventListener('click', function(e) {
-      const btn = e.target.closest('.width-button');
+      const btn = e.target.closest('.width-preset');
       if (!btn || !btn.dataset.width) return;
       currentWidth = parseInt(btn.dataset.width);
-      document.querySelectorAll('.width-button').forEach(b => b.classList.remove('active'));
+      widthInput.value = currentWidth;
+      document.querySelectorAll('.width-preset').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
     });
 
@@ -705,12 +861,204 @@ body {
       redrawAll();
     }
 
+    // --- Clipboard: Ctrl+C to copy, Ctrl+V to paste image ---
+    document.addEventListener('paste', function(e) {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          e.preventDefault();
+          const blob = items[i].getAsFile();
+          const reader = new FileReader();
+          reader.onload = function(ev) {
+            const pasteImg = new Image();
+            pasteImg.onload = function() {
+              // Paste as a new operation: draw the pasted image onto drawCanvas
+              const pasteCanvas = document.createElement('canvas');
+              pasteCanvas.width = bgCanvas.width;
+              pasteCanvas.height = bgCanvas.height;
+              const pCtx = pasteCanvas.getContext('2d');
+              // Scale pasted image to fit canvas, centered
+              const scale = Math.min(bgCanvas.width / pasteImg.width, bgCanvas.height / pasteImg.height, 1);
+              const pw = Math.round(pasteImg.width * scale);
+              const ph = Math.round(pasteImg.height * scale);
+              const px = Math.round((bgCanvas.width - pw) / 2);
+              const py = Math.round((bgCanvas.height - ph) / 2);
+              pCtx.drawImage(pasteImg, px, py, pw, ph);
+              operations.push({ type: 'pasteImage', dataUrl: pasteCanvas.toDataURL('image/png'), x: px, y: py, w: pw, h: ph });
+              redoStack = [];
+              redrawAll();
+            };
+            pasteImg.src = ev.target.result;
+          };
+          reader.readAsDataURL(blob);
+          break;
+        }
+      }
+    });
+
+    // Override drawOperation for pasteImage type
+    const origDrawOperation = drawOperation;
+    function drawOperationExt(ctx, op) {
+      if (op.type === 'pasteImage') {
+        const pasteImg = new Image();
+        pasteImg.src = op.dataUrl;
+        // Synchronous draw since data URL should be loaded
+        ctx.drawImage(pasteImg, op.x, op.y, op.w, op.h);
+        return;
+      }
+      origDrawOperation(ctx, op);
+    }
+    // Patch: replace drawOperation references
+    // We need to reassign the function used in redrawAll
+    // Since functions are hoisted, we override redrawAll to use extended version
+
+    function redrawAllExt() {
+      if (!img) return;
+      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
+
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      for (const op of operations) {
+        drawOperationExt(drawCtx, op);
+      }
+      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    }
+
+    // Pre-load paste images so they render synchronously
+    function preloadPasteImages(cb) {
+      const pasteOps = operations.filter(op => op.type === 'pasteImage' && !op._img);
+      if (pasteOps.length === 0) { cb(); return; }
+      let loaded = 0;
+      pasteOps.forEach(function(op) {
+        const pImg = new Image();
+        pImg.onload = function() {
+          op._img = pImg;
+          loaded++;
+          if (loaded === pasteOps.length) cb();
+        };
+        pImg.src = op.dataUrl;
+      });
+    }
+
+    // Override drawOperation to use cached images
+    function drawOperationFinal(ctx, op) {
+      if (op.type === 'pasteImage') {
+        if (op._img) {
+          ctx.drawImage(op._img, op.x, op.y, op.w, op.h);
+        }
+        return;
+      }
+      ctx.save();
+      ctx.strokeStyle = op.color;
+      ctx.fillStyle = op.color;
+      ctx.lineWidth = op.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      switch (op.type) {
+        case 'pen': {
+          if (op.points.length < 2) break;
+          ctx.beginPath();
+          ctx.moveTo(op.points[0].x, op.points[0].y);
+          for (let i = 1; i < op.points.length; i++) ctx.lineTo(op.points[i].x, op.points[i].y);
+          ctx.stroke();
+          break;
+        }
+        case 'line': {
+          ctx.beginPath();
+          ctx.moveTo(op.x1, op.y1);
+          ctx.lineTo(op.x2, op.y2);
+          ctx.stroke();
+          break;
+        }
+        case 'rect': {
+          ctx.strokeRect(op.x, op.y, op.w, op.h);
+          break;
+        }
+        case 'arrow': {
+          const dx = op.x2 - op.x1, dy = op.y2 - op.y1;
+          const angle = Math.atan2(dy, dx);
+          const headLen = Math.max(10, op.width * 3);
+          ctx.beginPath();
+          ctx.moveTo(op.x1, op.y1);
+          ctx.lineTo(op.x2, op.y2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(op.x2, op.y2);
+          ctx.lineTo(op.x2 - headLen * Math.cos(angle - Math.PI / 6), op.y2 - headLen * Math.sin(angle - Math.PI / 6));
+          ctx.moveTo(op.x2, op.y2);
+          ctx.lineTo(op.x2 - headLen * Math.cos(angle + Math.PI / 6), op.y2 - headLen * Math.sin(angle + Math.PI / 6));
+          ctx.stroke();
+          break;
+        }
+        case 'text': {
+          const fontSize = op.fontSize || Math.max(14, op.width * 4);
+          ctx.font = 'bold ' + fontSize + 'px system-ui, -apple-system, sans-serif';
+          const lines = (op.text || '').split('\\n');
+          for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], op.x, op.y + i * (fontSize * 1.3));
+          break;
+        }
+        case 'eraser': {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.lineWidth = op.width * 4;
+          if (op.points.length < 2) break;
+          ctx.beginPath();
+          ctx.moveTo(op.points[0].x, op.points[0].y);
+          for (let i = 1; i < op.points.length; i++) ctx.lineTo(op.points[i].x, op.points[i].y);
+          ctx.stroke();
+          break;
+        }
+      }
+      ctx.restore();
+    }
+
+    // Final versions that handle paste images properly
+    redrawAll = function() {
+      if (!img) return;
+      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      for (const op of operations) drawOperationFinal(drawCtx, op);
+      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    };
+
+    redrawWithEraserPreview = function() {
+      if (!img) return;
+      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      for (const op of operations) drawOperationFinal(drawCtx, op);
+      if (currentPoints.length >= 2) {
+        drawOperationFinal(drawCtx, { type: 'eraser', points: currentPoints, color: currentColor, width: currentWidth });
+      }
+    };
+
+    // Export also uses final draw
+    function getCompositeDataUrl() {
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = img.width;
+      exportCanvas.height = img.height;
+      const ctx = exportCanvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, img.width, img.height);
+      const scale = img.width / bgCanvas.width;
+      ctx.save();
+      ctx.scale(scale, scale);
+      for (const op of operations) drawOperationFinal(ctx, op);
+      ctx.restore();
+      return exportCanvas.toDataURL('image/png');
+    }
+
     // --- Keyboard shortcuts ---
     document.addEventListener('keydown', function(e) {
-      if (e.target.tagName === 'INPUT') return;
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        e.preventDefault();
+        vscode.postMessage({ type: 'copy', dataUrl: getCompositeDataUrl() });
+        return;
+      }
 
       switch (e.key.toLowerCase()) {
         case 'p': selectTool('pen'); break;
@@ -727,29 +1075,12 @@ body {
       document.querySelectorAll('#tools .tool-button').forEach(b => {
         b.classList.toggle('active', b.dataset.tool === tool);
       });
-    }
-
-    // --- Composite and export ---
-    function getCompositeDataUrl() {
-      // Create a full-resolution composite (at original image size)
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = img.width;
-      exportCanvas.height = img.height;
-      const ctx = exportCanvas.getContext('2d');
-
-      // Draw background image at full res
-      ctx.drawImage(img, 0, 0, img.width, img.height);
-
-      // Scale up annotations from display coords to full res
-      const scale = img.width / bgCanvas.width;
-      ctx.save();
-      ctx.scale(scale, scale);
-      for (const op of operations) {
-        drawOperation(ctx, op);
+      if (tool === 'eraser') {
+        container.classList.add('eraser-active');
+      } else {
+        container.classList.remove('eraser-active');
+        eraserCursor.style.display = 'none';
       }
-      ctx.restore();
-
-      return exportCanvas.toDataURL('image/png');
     }
 
     // --- Action buttons ---

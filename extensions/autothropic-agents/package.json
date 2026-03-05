@@ -149,6 +149,15 @@
         "mac": "cmd+shift+n"
       }
     ],
+    "terminal": {
+      "profiles": [
+        {
+          "id": "autothropic.agentTerminal",
+          "title": "Autothropic Agent",
+          "icon": "hubot"
+        }
+      ]
+    },
     "configuration": {
       "title": "Autothropic",
       "properties": {

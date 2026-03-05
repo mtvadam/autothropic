@@ -37,4 +37,7 @@ export interface IPreviewCaptureService {
 
 	/** Check if the clip buffer is active. */
 	getClipStatus(): Promise<{ active: boolean; frameCount: number }>;
+
+	/** Import Chrome browser cookies into Electron's session so the preview shares login state. */
+	syncChromeCookies(): Promise<{ count: number; error?: string }>;
 }

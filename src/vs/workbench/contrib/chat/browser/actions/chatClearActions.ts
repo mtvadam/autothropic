@@ -312,7 +312,7 @@ export function registerNewChatActions() {
 		constructor() {
 			super({
 				id: 'workbench.action.chat.openEditSession',
-				title: localize2('chat.openEdits.label', "Open {0}", 'Copilot Edits'),
+				title: localize2('chat.openEdits.label', "Open {0}", 'Autothropic Edits'),
 				category: CHAT_CATEGORY,
 				icon: Codicon.goToEditingSession,
 				precondition: ContextKeyExpr.and(ChatContextKeys.enabled, ChatContextKeys.editingParticipantRegistered),

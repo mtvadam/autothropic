@@ -7,7 +7,10 @@ import { IPreviewCaptureService } from '../../../../platform/previewCapture/comm
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 
-CommandsRegistry.registerCommand('_autothropic.capture.screenshot', async (accessor, proxyPort: number, deviceInfo?: { width: number; height: number; dpr: number }) => {
+// All main-process commands use .mainProcess suffix to avoid conflicting with
+// the browser-layer commands in autothropic.contribution.ts which use webview.capturePage().
+
+CommandsRegistry.registerCommand('_autothropic.capture.screenshot.mainProcess', async (accessor, proxyPort: number, deviceInfo?: { width: number; height: number; dpr: number }) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);
@@ -18,7 +21,7 @@ CommandsRegistry.registerCommand('_autothropic.capture.screenshot', async (acces
 	}
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.startClipBuffer', async (accessor, proxyPort: number) => {
+CommandsRegistry.registerCommand('_autothropic.capture.startClipBuffer.mainProcess', async (accessor, proxyPort: number) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);
@@ -29,7 +32,7 @@ CommandsRegistry.registerCommand('_autothropic.capture.startClipBuffer', async (
 	}
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.stopClipBuffer', async (accessor) => {
+CommandsRegistry.registerCommand('_autothropic.capture.stopClipBuffer.mainProcess', async (accessor) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);
@@ -40,7 +43,7 @@ CommandsRegistry.registerCommand('_autothropic.capture.stopClipBuffer', async (a
 	}
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.getClipThumbnails', async (accessor, seconds: number) => {
+CommandsRegistry.registerCommand('_autothropic.capture.getClipThumbnails.mainProcess', async (accessor, seconds: number) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);
@@ -51,7 +54,7 @@ CommandsRegistry.registerCommand('_autothropic.capture.getClipThumbnails', async
 	}
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.getSuggestedIndices', async (accessor, seconds: number, maxFrames: number) => {
+CommandsRegistry.registerCommand('_autothropic.capture.getSuggestedIndices.mainProcess', async (accessor, seconds: number, maxFrames: number) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);
@@ -62,7 +65,7 @@ CommandsRegistry.registerCommand('_autothropic.capture.getSuggestedIndices', asy
 	}
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.grabSelected', async (accessor, indices: number[]) => {
+CommandsRegistry.registerCommand('_autothropic.capture.grabSelected.mainProcess', async (accessor, indices: number[]) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);
@@ -73,7 +76,7 @@ CommandsRegistry.registerCommand('_autothropic.capture.grabSelected', async (acc
 	}
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.getClipStatus', async (accessor) => {
+CommandsRegistry.registerCommand('_autothropic.capture.getClipStatus.mainProcess', async (accessor) => {
 	const logService = accessor.get(ILogService);
 	try {
 		const captureService = accessor.get(IPreviewCaptureService);

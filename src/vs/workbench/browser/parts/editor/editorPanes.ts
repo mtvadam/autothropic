@@ -334,7 +334,10 @@ export class EditorPanes extends Disposable {
 
 		// Show editor
 		const container = assertIsDefined(editorPane.getContainer());
-		this.editorPanesParent.appendChild(container);
+		// Only append if not already in the parent (preview editor stays in DOM when hidden)
+		if (container.parentElement !== this.editorPanesParent) {
+			this.editorPanesParent.appendChild(container);
+		}
 		show(container);
 
 		// Indicate to editor that it is now visible
@@ -441,7 +444,10 @@ export class EditorPanes extends Disposable {
 			// This ensures that a slow loading input will not
 			// be visible for the duration of the new input to
 			// load (https://github.com/microsoft/vscode/issues/34697)
-			editorPane.clearInput();
+			// Skip for preview editor -- clearInput wipes webview state causing full page reload
+			if (editorPane.getId() !== 'workbench.editor.autothropicPreview') {
+				editorPane.clearInput();
+			}
 
 			// Set the input to the editor pane and keep track of it
 			const pendingSetInput = editorPane.setInput(editor, options, context, operation.token);
@@ -478,17 +484,27 @@ export class EditorPanes extends Disposable {
 		// Indicate to editor pane before removing the editor from
 		// the DOM to give a chance to persist certain state that
 		// might depend on still being the active DOM element.
-		this.safeRun(() => this._activeEditorPane?.clearInput());
+		// Skip clearInput for preview editor -- it wipes webview state causing full page reload
+		const isPreviewEditor = this._activeEditorPane.getId() === 'workbench.editor.autothropicPreview';
+		if (!isPreviewEditor) {
+			this.safeRun(() => this._activeEditorPane?.clearInput());
+		}
 		this.safeRun(() => this._activeEditorPane?.setVisible(false));
 
 		// Clear any pending setInput promise
 		this.mapEditorPaneToPendingSetInput.delete(this._activeEditorPane);
 
 		// Remove editor pane from parent
+		// Exception: preview editor keeps its container in DOM to avoid webview flash
 		const editorPaneContainer = this._activeEditorPane.getContainer();
 		if (editorPaneContainer) {
-			editorPaneContainer.remove();
-			hide(editorPaneContainer);
+			if (isPreviewEditor) {
+				// Keep in DOM but hide -- prevents <webview> from losing its compositor surface
+				hide(editorPaneContainer);
+			} else {
+				editorPaneContainer.remove();
+				hide(editorPaneContainer);
+			}
 		}
 
 		// Clear active editor pane

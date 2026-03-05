@@ -1,0 +1,510 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.autothropic-preview-editor {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Toolbar */
+.autothropic-preview-editor #ap-toolbar {
+	flex-shrink: 0;
+	background: var(--vscode-titleBar-activeBackground, var(--vscode-editor-background));
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+}
+.autothropic-preview-editor .toolbar-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	flex-wrap: wrap;
+	min-height: 30px;
+}
+.autothropic-preview-editor .toolbar-row.url-row {
+	border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+	padding: 4px 10px;
+}
+.autothropic-preview-editor .toolbar-spacer { flex: 1; }
+
+/* Separator */
+.autothropic-preview-editor .sep {
+	width: 1px;
+	height: 14px;
+	background: var(--vscode-panel-border, var(--vscode-widget-border));
+	flex-shrink: 0;
+}
+
+/* Toggle pill */
+.autothropic-preview-editor .toggle-pill {
+	display: flex;
+	align-items: center;
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	border-radius: 5px;
+	overflow: hidden;
+	height: 22px;
+}
+.autothropic-preview-editor .pill-opt {
+	padding: 0 7px;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	font-size: 10px;
+	line-height: 1;
+	border: none;
+	background: transparent;
+	color: var(--vscode-disabledForeground);
+	cursor: pointer;
+	transition: all 0.15s;
+	font-family: inherit;
+}
+.autothropic-preview-editor .pill-opt:hover { color: var(--vscode-foreground); }
+.autothropic-preview-editor .pill-opt.selected {
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+/* Tool button */
+.autothropic-preview-editor .tool-btn {
+	padding: 0 7px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 5px;
+	font-size: 10px;
+	line-height: 1;
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--vscode-disabledForeground);
+	cursor: pointer;
+	transition: all 0.15s;
+	font-family: inherit;
+}
+.autothropic-preview-editor .tool-btn:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.autothropic-preview-editor .tool-btn.active {
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+/* Static label */
+.autothropic-preview-editor .label-static {
+	padding: 0 7px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Dimension inputs */
+.autothropic-preview-editor .dim-inputs {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.autothropic-preview-editor .dim-inputs input {
+	width: 52px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	font-size: 10px;
+	font-family: ui-monospace, monospace;
+	text-align: center;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	color: var(--vscode-input-foreground);
+	outline: none;
+	transition: border-color 0.15s;
+}
+.autothropic-preview-editor .dim-inputs input:focus { border-color: var(--vscode-focusBorder); color: var(--vscode-focusBorder); }
+.autothropic-preview-editor .dim-x { font-size: 9px; color: var(--vscode-descriptionForeground); }
+
+/* Dropdown */
+.autothropic-preview-editor .dropdown {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+.autothropic-preview-editor .dropdown-trigger {
+	padding: 0 8px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	border-radius: 5px;
+	font-size: 10px;
+	line-height: 1;
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	transition: all 0.15s;
+	font-family: inherit;
+	max-width: 180px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.autothropic-preview-editor .dropdown-trigger:hover { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); }
+.autothropic-preview-editor .dim-label { font-size: 9px; color: var(--vscode-descriptionForeground); font-family: ui-monospace, monospace; }
+
+.autothropic-preview-editor .dropdown-menu {
+	display: none;
+	position: absolute;
+	left: 0;
+	top: 100%;
+	margin-top: 4px;
+	z-index: 100;
+	min-width: 160px;
+	max-height: 320px;
+	overflow-y: auto;
+	background: var(--vscode-dropdown-background, var(--vscode-menu-background, var(--vscode-editor-background)));
+	border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+	padding: 4px 0;
+}
+.autothropic-preview-editor .dropdown-menu.dropdown-right { left: auto; right: 0; }
+.autothropic-preview-editor .dropdown.open .dropdown-menu { display: block; }
+
+.autothropic-preview-editor .dropdown-group-label {
+	padding: 6px 12px 4px;
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+	font-weight: 600;
+	position: sticky;
+	top: 0;
+	background: var(--vscode-dropdown-background, var(--vscode-menu-background, var(--vscode-editor-background)));
+}
+.autothropic-preview-editor .dropdown-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	width: 100%;
+	padding: 5px 12px;
+	font-size: 11px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	transition: all 0.1s;
+	font-family: inherit;
+	text-align: left;
+}
+.autothropic-preview-editor .dropdown-item:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-list-hoverForeground, var(--vscode-foreground)); }
+.autothropic-preview-editor .dropdown-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+
+/* URL bar */
+.autothropic-preview-editor .url-bar {
+	flex: 1;
+	display: flex;
+	gap: 4px;
+}
+.autothropic-preview-editor .url-bar input {
+	flex: 1;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	border-radius: 4px;
+	color: var(--vscode-input-foreground);
+	padding: 4px 8px;
+	font-size: 11px;
+	font-family: inherit;
+}
+.autothropic-preview-editor .url-bar input:focus { outline: none; border-color: var(--vscode-focusBorder); }
+.autothropic-preview-editor .url-bar button,
+.autothropic-preview-editor .action-btn {
+	background: var(--vscode-button-secondaryBackground, var(--vscode-input-background));
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	border-radius: 4px;
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	padding: 4px 8px;
+	font-size: 12px;
+	cursor: pointer;
+	font-family: inherit;
+	line-height: 1;
+}
+.autothropic-preview-editor .url-bar button:hover,
+.autothropic-preview-editor .action-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+
+/* Preview area */
+.autothropic-preview-editor #ap-preview-area {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 16px;
+	overflow: hidden;
+	position: relative;
+}
+
+/* Device frames -- use #ap-device-frame prefix */
+.autothropic-preview-editor #ap-device-frame {
+	position: relative;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.autothropic-preview-editor #ap-device-frame.custom {
+	border: 1px solid rgba(128, 128, 128, 0.4);
+	border-radius: 4px;
+	overflow: hidden;
+	position: relative;
+	box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.15);
+}
+/* Custom mode: webview must be position:absolute to prevent flex expansion */
+.autothropic-preview-editor #ap-device-frame.custom #ap-preview-webview {
+	position: absolute !important;
+	inset: 0 !important;
+	width: auto !important;
+	height: auto !important;
+	flex: none !important;
+}
+
+/* Custom mode -- resize wrapper grid */
+.autothropic-preview-editor .custom-resize-wrapper {
+	flex-shrink: 0;
+}
+.autothropic-preview-editor .resize-handle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-descriptionForeground);
+	background: rgba(128, 128, 128, 0.15);
+	transition: background 0.15s;
+}
+.autothropic-preview-editor .resize-handle:hover { background: rgba(128, 128, 128, 0.35); }
+.autothropic-preview-editor .resize-r {
+	grid-row: 1; grid-column: 2;
+	cursor: ew-resize;
+}
+.autothropic-preview-editor .resize-r .resize-grip {
+	width: 3px;
+	height: 32px;
+	border-left: 1px solid currentColor;
+	border-right: 1px solid currentColor;
+}
+.autothropic-preview-editor .resize-b {
+	grid-row: 2; grid-column: 1;
+	cursor: ns-resize;
+}
+.autothropic-preview-editor .resize-b .resize-grip {
+	height: 3px;
+	width: 32px;
+	border-top: 1px solid currentColor;
+	border-bottom: 1px solid currentColor;
+}
+.autothropic-preview-editor .resize-br {
+	grid-row: 2; grid-column: 2;
+	cursor: nwse-resize;
+}
+
+.autothropic-preview-editor #ap-device-frame.phone {
+	overflow: visible;
+}
+.autothropic-preview-editor #ap-device-frame.phone .screen-area {
+	position: relative;
+	overflow: hidden;
+	background: #000;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Status bar */
+.autothropic-preview-editor .status-bar {
+	flex-shrink: 0;
+	position: relative;
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	z-index: 10;
+}
+.autothropic-preview-editor .status-bar .sb-time {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #fff;
+	font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+	font-weight: 650;
+	font-size: 17px;
+	letter-spacing: 0.3px;
+}
+.autothropic-preview-editor .status-bar .sb-icons {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.autothropic-preview-editor .status-bar .sb-icons svg { display: block; }
+
+/* Dynamic Island pill */
+.autothropic-preview-editor .dynamic-island {
+	position: absolute;
+	left: 50%;
+	transform: translateX(-50%);
+	background: #2A2A2C;
+	border-radius: 100px;
+	z-index: 20;
+	pointer-events: none;
+}
+
+/* Notch */
+.autothropic-preview-editor .notch {
+	position: absolute;
+	left: 50%;
+	top: 0;
+	transform: translateX(-50%);
+	background: #2A2A2C;
+	pointer-events: none;
+	z-index: 20;
+}
+
+/* Home indicator */
+.autothropic-preview-editor .home-indicator {
+	flex-shrink: 0;
+	background: transparent;
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+	position: relative;
+	z-index: 2;
+}
+
+/* Tablet frame */
+.autothropic-preview-editor #ap-device-frame.tablet {
+	background: #2A2A2C;
+	border-radius: 20px;
+	padding: 12px;
+	box-shadow:
+		inset 0 0 0 1px rgba(255,255,255,0.06),
+		0 0 0 1px rgba(0,0,0,0.8),
+		0 20px 60px rgba(0,0,0,0.6);
+}
+.autothropic-preview-editor #ap-device-frame.tablet .screen-area {
+	border-radius: 4px;
+	overflow: hidden;
+	background: #000;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Laptop frame */
+.autothropic-preview-editor #ap-device-frame.laptop {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+.autothropic-preview-editor .laptop-lid {
+	background: #1c1c1e;
+	border: 2px solid #3a3a3a;
+	border-radius: 12px;
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.autothropic-preview-editor .laptop-lid .webcam {
+	position: absolute;
+	top: 8px;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #1a2a3a;
+	border: 1px solid #2a3a4a;
+}
+.autothropic-preview-editor .laptop-lid .screen-area {
+	overflow: hidden;
+	background: #000;
+	border-radius: 8px;
+	display: flex;
+	flex-direction: column;
+}
+.autothropic-preview-editor .laptop-base {
+	background: #232326;
+	border: 2px solid #3a3a3a;
+	border-top: none;
+	border-bottom-left-radius: 6px;
+	border-bottom-right-radius: 6px;
+	display: flex;
+	justify-content: center;
+	margin-top: -2px;
+}
+.autothropic-preview-editor .laptop-base .trackpad-notch {
+	width: 80px;
+	height: 4px;
+	background: #2a2a2d;
+	border-bottom-left-radius: 4px;
+	border-bottom-right-radius: 4px;
+}
+
+/* Browser chrome overlays */
+.autothropic-preview-editor .chrome-bar { flex-shrink: 0; pointer-events: auto; }
+.autothropic-preview-editor .desktop-chrome { display: flex; flex-direction: column; z-index: 5; }
+.autothropic-preview-editor .os-frame { z-index: 5; }
+.autothropic-preview-editor .taskbar { z-index: 5; }
+
+/* Webview tag */
+.autothropic-preview-editor #ap-preview-webview {
+	width: 100%;
+	flex: 1;
+	border: none;
+	background: transparent;
+}
+
+/* Debug panel -- docked at bottom, takes space from preview area */
+.autothropic-preview-editor #ap-debug-panel {
+	flex-shrink: 0;
+	background: var(--vscode-panel-background, #1a1a1a);
+	color: var(--vscode-editor-foreground, #e8e5de);
+	font-family: 'Cascadia Code', Consolas, monospace;
+	font-size: 11px;
+	border-top: 1px solid var(--vscode-panel-border, #333);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	position: relative;
+}
+.autothropic-preview-editor #ap-debug-panel #ap-debug-logs {
+	user-select: text !important;
+	-webkit-user-select: text !important;
+	cursor: text;
+}
+.autothropic-preview-editor #ap-debug-panel #ap-debug-logs div {
+	user-select: text !important;
+	-webkit-user-select: text !important;
+}
+.autothropic-preview-editor #ap-debug-panel #ap-debug-logs::selection,
+.autothropic-preview-editor #ap-debug-panel #ap-debug-logs *::selection {
+	background: var(--vscode-editor-selectionBackground, rgba(56, 121, 217, 0.4));
+}
+
+/* Chrome URL inline editor */
+.chrome-url-editor {
+	z-index: 9999;
+	border: 2px solid #007AFF;
+	font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+	font-size: 14px;
+	padding: 0 12px;
+	box-sizing: border-box;
+	outline: none;
+	background: #fff;
+	color: #000;
+}
+
+/* Scrollbar for dropdown menus */
+.autothropic-preview-editor .dropdown-menu::-webkit-scrollbar { width: 4px; }
+.autothropic-preview-editor .dropdown-menu::-webkit-scrollbar-track { background: transparent; }
+.autothropic-preview-editor .dropdown-menu::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 2px; }
+.autothropic-preview-editor .dropdown-menu::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }

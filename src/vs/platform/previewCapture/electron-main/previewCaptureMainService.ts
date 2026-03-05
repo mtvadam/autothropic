@@ -3,13 +3,18 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { BrowserWindow, nativeImage, WebFrameMain } from 'electron';
+import { BrowserWindow, nativeImage, session, WebFrameMain } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { IPreviewCaptureService, ClipThumbnail } from '../common/previewCapture.js';
 import { ILogService } from '../../log/common/log.js';
+
+const execAsync = promisify(exec);
 
 interface BufferFrame {
 	jpeg: Buffer;
@@ -26,10 +31,6 @@ interface Rect {
 	height: number;
 }
 
-const DEBUG_LOG = path.join(os.tmpdir(), 'autothropic-capture-debug.log');
-function debugLog(msg: string): void {
-	try { fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch { /* */ }
-}
 
 export class PreviewCaptureMainService extends Disposable implements IPreviewCaptureService {
 
@@ -47,6 +48,10 @@ export class PreviewCaptureMainService extends Disposable implements IPreviewCap
 	private cachedRect: Rect | null = null;
 	private lastRectUpdate = 0;
 	private _lastDiagTime = 0;
+
+	// Chrome cookie import
+	private _chromeMasterKey: Buffer | null = null;
+	private _cookieSyncDone = false;
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
@@ -478,6 +483,183 @@ export class PreviewCaptureMainService extends Disposable implements IPreviewCap
 			pixels++;
 		}
 		return pixels > 0 ? total / pixels : 0;
+	}
+
+	// --- Chrome Cookie Import ---
+
+	async syncChromeCookies(): Promise<{ count: number; error?: string }> {
+		if (this._cookieSyncDone) {
+			return { count: 0 }; // Already synced this session
+		}
+
+		if (process.platform !== 'win32') {
+			return { count: 0, error: 'Chrome cookie import only supported on Windows' };
+		}
+
+		const localAppData = process.env.LOCALAPPDATA;
+		if (!localAppData) {
+			return { count: 0, error: 'LOCALAPPDATA not set' };
+		}
+
+		try {
+			const chromeUserData = path.join(localAppData, 'Google', 'Chrome', 'User Data');
+			const localStatePath = path.join(chromeUserData, 'Local State');
+
+			if (!fs.existsSync(localStatePath)) {
+				return { count: 0, error: 'Chrome Local State not found' };
+			}
+
+			// Get master decryption key (cached)
+			const masterKey = await this.getChromeMasterKey(localStatePath);
+			if (!masterKey) {
+				return { count: 0, error: 'Failed to decrypt Chrome master key' };
+			}
+
+			// Find Cookies database
+			let cookieDbPath = path.join(chromeUserData, 'Default', 'Network', 'Cookies');
+			if (!fs.existsSync(cookieDbPath)) {
+				cookieDbPath = path.join(chromeUserData, 'Default', 'Cookies');
+			}
+			if (!fs.existsSync(cookieDbPath)) {
+				return { count: 0, error: 'Chrome Cookies database not found' };
+			}
+
+			// Copy to avoid lock conflicts with Chrome
+			const tmpDb = path.join(os.tmpdir(), `autothropic-cookies-${Date.now()}.db`);
+			fs.copyFileSync(cookieDbPath, tmpDb);
+
+			try {
+				const rows = await this.readCookiesFromDb(tmpDb);
+				this.logService.info(`[previewCapture] Read ${rows.length} cookies from Chrome`);
+
+				const ses = session.defaultSession;
+				let count = 0;
+
+				for (const row of rows) {
+					try {
+						let value = row.value;
+						if (row.encrypted_value && row.encrypted_value.length > 3) {
+							value = this.decryptCookieValue(row.encrypted_value, masterKey);
+						}
+						if (!value) { continue; }
+
+						const secure = !!row.is_secure;
+						const scheme = secure ? 'https' : 'http';
+						const domain = row.host_key.startsWith('.') ? row.host_key.slice(1) : row.host_key;
+						const cookieUrl = `${scheme}://${domain}${row.path}`;
+
+						const sameSiteMap: Record<number, 'unspecified' | 'no_restriction' | 'lax' | 'strict'> = {
+							[-1]: 'no_restriction',
+							0: 'unspecified',
+							1: 'lax',
+							2: 'strict',
+						};
+
+						await ses.cookies.set({
+							url: cookieUrl,
+							name: row.name,
+							value,
+							domain: row.host_key,
+							path: row.path,
+							secure,
+							httpOnly: !!row.is_httponly,
+							sameSite: sameSiteMap[row.samesite] ?? 'unspecified',
+							expirationDate: row.has_expires ? this.chromeTimeToUnix(row.expires_utc) : undefined,
+						});
+						count++;
+					} catch {
+						// Individual cookie failure -- skip
+					}
+				}
+
+				this._cookieSyncDone = true;
+				this.logService.info(`[previewCapture] Imported ${count} cookies into Electron session`);
+				return { count };
+			} finally {
+				try { fs.unlinkSync(tmpDb); } catch { /* cleanup */ }
+			}
+		} catch (err) {
+			this.logService.error('[previewCapture] syncChromeCookies failed:', err);
+			return { count: 0, error: String(err) };
+		}
+	}
+
+	private async getChromeMasterKey(localStatePath: string): Promise<Buffer | null> {
+		if (this._chromeMasterKey) { return this._chromeMasterKey; }
+
+		try {
+			const localState = JSON.parse(fs.readFileSync(localStatePath, 'utf8'));
+			const encryptedKeyB64: string | undefined = localState?.os_crypt?.encrypted_key;
+			if (!encryptedKeyB64) { return null; }
+
+			const encryptedKey = Buffer.from(encryptedKeyB64, 'base64');
+			// Strip "DPAPI" prefix (5 bytes)
+			const dpapiData = encryptedKey.slice(5);
+			const dpapiB64 = dpapiData.toString('base64');
+
+			// Decrypt with Windows DPAPI via PowerShell
+			const { stdout } = await execAsync(
+				`powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Security; [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String('${dpapiB64}'), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser))"`,
+				{ timeout: 15000 }
+			);
+
+			this._chromeMasterKey = Buffer.from(stdout.trim(), 'base64');
+			this.logService.info(`[previewCapture] Chrome master key decrypted (${this._chromeMasterKey.length} bytes)`);
+			return this._chromeMasterKey;
+		} catch (err) {
+			this.logService.error('[previewCapture] getChromeMasterKey failed:', err);
+			return null;
+		}
+	}
+
+	private async readCookiesFromDb(dbPath: string): Promise<any[]> {
+		const sqlite3 = await import('@vscode/sqlite3');
+		return new Promise((resolve, reject) => {
+			try {
+				const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err: Error | null) => {
+					if (err) { reject(err); return; }
+
+					db.all(
+						'SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, samesite, has_expires FROM cookies',
+						[],
+						(err2: Error | null, rows: any[]) => {
+							db.close();
+							if (err2) { reject(err2); return; }
+							resolve(rows || []);
+						}
+					);
+				});
+			} catch (err) {
+				reject(err);
+			}
+		});
+	}
+
+	private decryptCookieValue(encryptedValue: Buffer, key: Buffer): string {
+		try {
+			if (encryptedValue.length < 16) { return ''; }
+
+			const prefix = encryptedValue.slice(0, 3).toString('utf8');
+			if (prefix !== 'v10' && prefix !== 'v20') { return ''; }
+
+			const nonce = encryptedValue.slice(3, 3 + 12);
+			const ciphertext = encryptedValue.slice(3 + 12, encryptedValue.length - 16);
+			const tag = encryptedValue.slice(encryptedValue.length - 16);
+
+			const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
+			decipher.setAuthTag(tag);
+			let decrypted = decipher.update(ciphertext);
+			decrypted = Buffer.concat([decrypted, decipher.final()]);
+			return decrypted.toString('utf8');
+		} catch {
+			return '';
+		}
+	}
+
+	private chromeTimeToUnix(chromeTime: number): number {
+		// Chrome: microseconds since Jan 1, 1601
+		// Unix: seconds since Jan 1, 1970
+		return Math.floor(chromeTime / 1000000) - 11644473600;
 	}
 
 	override dispose(): void {

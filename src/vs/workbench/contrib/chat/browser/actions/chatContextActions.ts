@@ -350,7 +350,7 @@ class AttachSelectionToEditingSessionAction extends Action2 {
 	constructor() {
 		super({
 			id: AttachSelectionToEditingSessionAction.ID,
-			title: localize2('workbench.action.edits.attachSelection.label', "Add Selection to {0}", 'Copilot Edits'),
+			title: localize2('workbench.action.edits.attachSelection.label', "Add Selection to {0}", 'Autothropic Edits'),
 			category: CHAT_CATEGORY,
 			f1: false,
 			precondition: ContextKeyExpr.and(ChatContextKeys.enabled, ActiveEditorContext.isEqualTo('workbench.editors.files.textFileEditor')),

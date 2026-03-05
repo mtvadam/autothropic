@@ -171,7 +171,7 @@ export class SessionManager {
 	}
 
 	/** Find the lowest unused "Agent N" number. */
-	private nextAgentNumber(): number {
+	nextAgentNumber(): number {
 		const used = new Set<number>();
 		for (const session of this.sessions.values()) {
 			const m = session.name.match(/^Agent (\d+)$/);
@@ -180,6 +180,37 @@ export class SessionManager {
 		let n = 1;
 		while (used.has(n)) { n++; }
 		return n;
+	}
+
+	/** Find a session by its terminal instance. */
+	getSessionByTerminal(terminal: vscode.Terminal): AgentSession | undefined {
+		for (const session of this.sessions.values()) {
+			if (session.terminal === terminal) { return session; }
+		}
+		return undefined;
+	}
+
+	/** Adopt a terminal created by the profile provider into the session manager. */
+	adoptTerminal(terminal: vscode.Terminal): AgentSession {
+		this.counter++;
+		const id = generateId();
+		const color = AGENT_COLORS[(this.counter - 1) % AGENT_COLORS.length];
+		const sessionName = terminal.name || `Agent ${this.nextAgentNumber()}`;
+
+		const session: AgentSession = {
+			id,
+			name: sessionName,
+			terminal,
+			status: 'waiting',
+			color,
+			graphPosition: { x: 200 + (this.counter - 1) * 220, y: 200 },
+			createdAt: Date.now(),
+		};
+
+		this.sessions.set(id, session);
+		this.saveState();
+		this._onChanged.fire();
+		return session;
 	}
 
 	/**

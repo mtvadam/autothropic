@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 interface ClipThumbnail {
   index: number;
@@ -12,6 +15,11 @@ interface AgentInfo {
   name: string;
   color: string;
   status: string;
+}
+
+interface GrabResult {
+  filePaths: string[];
+  dataUrls?: string[];
 }
 
 /**
@@ -40,6 +48,8 @@ export class ClipEditor {
           localResourceRoots: [this.extensionUri],
         },
       );
+
+      this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'clip-icon.svg');
 
       this.panel.onDidDispose(() => {
         this.panel = undefined;
@@ -118,11 +128,12 @@ export class ClipEditor {
     }
 
     try {
-      const result = await vscode.commands.executeCommand<{ filePaths: string[] }>(
+      const result = await vscode.commands.executeCommand<GrabResult>(
         '_autothropic.capture.grabSelected', indices
       );
-      if (result?.filePaths && result.filePaths.length > 0) {
-        this._onSend.fire({ filePaths: result.filePaths, agentId });
+      const filePaths = await this.resolveGrabResult(result);
+      if (filePaths.length > 0) {
+        this._onSend.fire({ filePaths, agentId });
       }
     } catch (err) {
       vscode.window.showErrorMessage(`Send failed: ${err}`);
@@ -136,18 +147,51 @@ export class ClipEditor {
     }
 
     try {
-      const result = await vscode.commands.executeCommand<{ filePaths: string[] }>(
+      const result = await vscode.commands.executeCommand<GrabResult>(
         '_autothropic.capture.grabSelected', indices
       );
-      if (result?.filePaths && result.filePaths.length > 0) {
-        for (const fp of result.filePaths) {
+      const filePaths = await this.resolveGrabResult(result);
+      if (filePaths.length > 0) {
+        for (const fp of filePaths) {
           await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(fp));
         }
-        vscode.window.showInformationMessage(`Exported ${result.filePaths.length} frame(s)`);
+        vscode.window.showInformationMessage(`Exported ${filePaths.length} frame(s)`);
       }
     } catch (err) {
       vscode.window.showErrorMessage(`Export failed: ${err}`);
     }
+  }
+
+  /** Convert grab result to file paths, saving data URLs to temp files if needed. */
+  private async resolveGrabResult(result: GrabResult | undefined | null): Promise<string[]> {
+    if (!result) { return []; }
+
+    // If we already have file paths, use them
+    if (result.filePaths && result.filePaths.length > 0) {
+      return result.filePaths;
+    }
+
+    // Otherwise save data URLs as temp PNG files
+    if (result.dataUrls && result.dataUrls.length > 0) {
+      const tmpDir = path.join(os.tmpdir(), 'autothropic-clips');
+      try { fs.mkdirSync(tmpDir, { recursive: true }); } catch { /* exists */ }
+
+      const ts = Date.now();
+      const filePaths: string[] = [];
+      for (let i = 0; i < result.dataUrls.length; i++) {
+        const dataUrl = result.dataUrls[i];
+        const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+        if (!match) { continue; }
+        const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+        const buffer = Buffer.from(match[2], 'base64');
+        const filePath = path.join(tmpDir, `clip-${ts}-${i + 1}.${ext}`);
+        fs.writeFileSync(filePath, buffer);
+        filePaths.push(filePath);
+      }
+      return filePaths;
+    }
+
+    return [];
   }
 
   private getHtml(thumbnails: ClipThumbnail[], suggested: number[], agents: AgentInfo[], seconds: number): string {
@@ -165,8 +209,8 @@ export class ClipEditor {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      background: #111110;
-      color: #a8a69e;
+      background: var(--vscode-editor-background, #111110);
+      color: var(--vscode-foreground, #a8a69e);
       font-family: system-ui, -apple-system, sans-serif;
       display: flex;
       flex-direction: column;
@@ -181,18 +225,18 @@ export class ClipEditor {
       align-items: center;
       gap: 12px;
       padding: 8px 16px;
-      border-bottom: 1px solid #2a2a26;
+      border-bottom: 1px solid var(--vscode-panel-border, #2a2a26);
       flex-shrink: 0;
     }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #d97757; }
-    .top-bar .title { font-size: 13px; font-weight: 600; color: #e8e5de; }
+    .top-bar .title { font-size: 13px; font-weight: 600; color: var(--vscode-editor-foreground, #e8e5de); }
     .duration-control {
       display: flex;
       align-items: center;
       gap: 8px;
       margin-left: auto;
     }
-    .duration-control label { font-size: 11px; color: #7a7870; }
+    .duration-control label { font-size: 11px; color: var(--vscode-descriptionForeground, #7a7870); }
     .duration-control input[type="range"] {
       width: 120px;
       accent-color: #d97757;
@@ -203,16 +247,16 @@ export class ClipEditor {
       color: #d97757;
       min-width: 24px;
     }
-    .frame-count { font-size: 11px; color: #7a7870; }
+    .frame-count { font-size: 11px; color: var(--vscode-descriptionForeground, #7a7870); }
     .close-btn {
       background: none;
       border: none;
-      color: #5a5850;
+      color: var(--vscode-disabledForeground, #5a5850);
       cursor: pointer;
       font-size: 16px;
       padding: 2px 6px;
     }
-    .close-btn:hover { color: #e8e5de; }
+    .close-btn:hover { color: var(--vscode-editor-foreground, #e8e5de); }
 
     /* --- Main View --- */
     .main-view {
@@ -266,42 +310,80 @@ export class ClipEditor {
       padding: 4px 8px;
       background: rgba(0,0,0,0.6);
       font-size: 10px;
-      color: #a8a69e;
+      color: var(--vscode-foreground, #a8a69e);
     }
     .nav-arrow {
       position: absolute;
       top: 50%;
       transform: translateY(-50%);
-      background: rgba(17,17,16,0.8);
-      border: 1px solid #2a2a26;
-      color: #a8a69e;
-      width: 32px;
-      height: 32px;
+      background: var(--vscode-sideBar-background, rgba(17,17,16,0.9));
+      border: 1px solid var(--vscode-panel-border, #2a2a26);
+      color: var(--vscode-foreground, #a8a69e);
+      width: 44px;
+      height: 44px;
       border-radius: 50%;
       cursor: pointer;
-      font-size: 16px;
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: background 0.15s, color 0.15s, transform 0.15s;
     }
-    .nav-arrow:hover { background: #232320; color: #e8e5de; }
-    .nav-arrow.left { left: 8px; }
-    .nav-arrow.right { right: 8px; }
+    .nav-arrow svg { width: 22px; height: 22px; }
+    .nav-arrow:hover {
+      background: var(--vscode-list-hoverBackground, #232320);
+      color: var(--vscode-editor-foreground, #e8e5de);
+      transform: translateY(-50%) scale(1.1);
+    }
+    .nav-arrow:active { transform: translateY(-50%) scale(0.95); }
+    @keyframes arrow-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(217,119,87,0.5); }
+      100% { box-shadow: 0 0 0 10px rgba(217,119,87,0); }
+    }
+    .nav-arrow.pulse {
+      animation: arrow-pulse 300ms ease-out;
+      border-color: rgba(217,119,87,0.5);
+    }
+    .nav-arrow.left { left: 12px; }
+    .nav-arrow.right { right: 12px; }
 
     /* --- Filmstrip --- */
-    .filmstrip {
+    .filmstrip-wrap {
       flex-shrink: 0;
+      position: relative;
+      border-top: 1px solid var(--vscode-panel-border, #2a2a26);
+    }
+    .filmstrip-wrap::before,
+    .filmstrip-wrap::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 32px;
+      z-index: 2;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 200ms;
+    }
+    .filmstrip-wrap::before {
+      left: 0;
+      background: linear-gradient(to right, var(--vscode-editor-background, #111110), transparent);
+    }
+    .filmstrip-wrap::after {
+      right: 0;
+      background: linear-gradient(to left, var(--vscode-editor-background, #111110), transparent);
+    }
+    .filmstrip-wrap.fade-left::before { opacity: 1; }
+    .filmstrip-wrap.fade-right::after { opacity: 1; }
+    .filmstrip {
       padding: 6px 16px;
-      border-top: 1px solid #2a2a26;
       overflow-x: auto;
       overflow-y: hidden;
       white-space: nowrap;
-      scrollbar-width: thin;
-      scrollbar-color: #35352f #111110;
+      text-align: center;
+      scrollbar-width: none;
     }
-    .filmstrip::-webkit-scrollbar { height: 4px; }
-    .filmstrip::-webkit-scrollbar-track { background: #111110; }
-    .filmstrip::-webkit-scrollbar-thumb { background: #35352f; border-radius: 2px; }
+    .filmstrip::-webkit-scrollbar { display: none; }
+    .filmstrip.overflowing { text-align: left; }
     .strip-thumb {
       display: inline-block;
       width: 56px;
@@ -312,7 +394,7 @@ export class ClipEditor {
       overflow: hidden;
       cursor: pointer;
       opacity: 0.35;
-      transition: opacity 0.1s, border-color 0.1s;
+      transition: opacity 200ms, border-color 200ms;
       vertical-align: middle;
     }
     .strip-thumb:hover { opacity: 0.7; }
@@ -322,15 +404,45 @@ export class ClipEditor {
     .strip-thumb img { width: 100%; height: 100%; object-fit: cover; }
 
     /* --- Selection Tray --- */
-    .selection-tray {
+    .tray-wrap {
       flex-shrink: 0;
-      padding: 6px 16px;
-      border-top: 1px solid #2a2a26;
+      position: relative;
+      border-top: 1px solid var(--vscode-panel-border, #2a2a26);
       display: none;
-      overflow-x: auto;
-      white-space: nowrap;
     }
-    .selection-tray.visible { display: block; }
+    .tray-wrap.visible { display: block; }
+    .tray-wrap::before,
+    .tray-wrap::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 32px;
+      z-index: 2;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 200ms;
+    }
+    .tray-wrap::before {
+      left: 0;
+      background: linear-gradient(to right, var(--vscode-editor-background, #111110), transparent);
+    }
+    .tray-wrap::after {
+      right: 0;
+      background: linear-gradient(to left, var(--vscode-editor-background, #111110), transparent);
+    }
+    .tray-wrap.fade-left::before { opacity: 1; }
+    .tray-wrap.fade-right::after { opacity: 1; }
+    .selection-tray {
+      padding: 6px 16px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      text-align: center;
+      scrollbar-width: none;
+    }
+    .selection-tray::-webkit-scrollbar { display: none; }
+    .selection-tray.overflowing { text-align: left; }
     .tray-thumb {
       display: inline-block;
       width: 48px;
@@ -379,7 +491,7 @@ export class ClipEditor {
       align-items: center;
       gap: 8px;
       padding: 8px 16px;
-      border-top: 1px solid #2a2a26;
+      border-top: 1px solid var(--vscode-panel-border, #2a2a26);
     }
     .action-btn {
       padding: 5px 12px;
@@ -387,17 +499,17 @@ export class ClipEditor {
       font-size: 11px;
       cursor: pointer;
       font-family: inherit;
-      border: 1px solid #2a2a26;
-      background: #1c1c1a;
-      color: #a8a69e;
+      border: 1px solid var(--vscode-panel-border, #2a2a26);
+      background: var(--vscode-sideBar-background, #1c1c1a);
+      color: var(--vscode-foreground, #a8a69e);
     }
-    .action-btn:hover { background: #232320; color: #e8e5de; }
-    .hint { font-size: 10px; color: #5a5850; margin-left: 8px; }
+    .action-btn:hover { background: var(--vscode-list-hoverBackground, #232320); color: var(--vscode-editor-foreground, #e8e5de); }
+    .hint { font-size: 10px; color: var(--vscode-disabledForeground, #5a5850); margin-left: 8px; }
     .spacer { flex: 1; }
     .agent-select {
-      background: #1c1c1a;
-      border: 1px solid #2a2a26;
-      color: #a8a69e;
+      background: var(--vscode-sideBar-background, #1c1c1a);
+      border: 1px solid var(--vscode-panel-border, #2a2a26);
+      color: var(--vscode-foreground, #a8a69e);
       padding: 5px 8px;
       border-radius: 5px;
       font-size: 11px;
@@ -423,7 +535,7 @@ export class ClipEditor {
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #5a5850;
+      color: var(--vscode-disabledForeground, #5a5850);
       font-size: 13px;
     }
   </style>
@@ -441,7 +553,7 @@ export class ClipEditor {
   </div>
 
   <div class="main-view" id="main-view">
-    <button class="nav-arrow left" id="nav-left">&#8249;</button>
+    <button class="nav-arrow left" id="nav-left"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>
     <div class="main-frame" id="main-frame">
       <img id="main-img" src="" />
       <span class="selection-badge" id="main-badge"></span>
@@ -450,11 +562,15 @@ export class ClipEditor {
         <span id="pos-label"></span>
       </div>
     </div>
-    <button class="nav-arrow right" id="nav-right">&#8250;</button>
+    <button class="nav-arrow right" id="nav-right"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
   </div>
 
-  <div class="filmstrip" id="filmstrip"></div>
-  <div class="selection-tray" id="selection-tray"></div>
+  <div class="filmstrip-wrap" id="filmstrip-wrap">
+    <div class="filmstrip" id="filmstrip"></div>
+  </div>
+  <div class="tray-wrap" id="tray-wrap">
+    <div class="selection-tray" id="selection-tray"></div>
+  </div>
 
   <div class="action-bar">
     <button class="action-btn" id="btn-autoselect">Auto-select</button>
@@ -485,8 +601,21 @@ export class ClipEditor {
       }
     }
 
+    function updateScrollFades(scrollEl, wrapEl) {
+      if (!scrollEl || !wrapEl) return;
+      const isOverflowing = scrollEl.scrollWidth > scrollEl.clientWidth + 2;
+      scrollEl.classList.toggle('overflowing', isOverflowing);
+      if (!isOverflowing) {
+        wrapEl.classList.remove('fade-left', 'fade-right');
+        return;
+      }
+      wrapEl.classList.toggle('fade-left', scrollEl.scrollLeft > 4);
+      wrapEl.classList.toggle('fade-right', scrollEl.scrollLeft + scrollEl.clientWidth < scrollEl.scrollWidth - 4);
+    }
+
     function renderFilmstrip() {
       const fs = document.getElementById('filmstrip');
+      const wrap = document.getElementById('filmstrip-wrap');
       if (thumbnails.length === 0) {
         fs.innerHTML = '<span style="color:#5a5850;font-size:11px">No frames captured. Load a URL in preview first.</span>';
         return;
@@ -500,16 +629,18 @@ export class ClipEditor {
       }
       fs.innerHTML = html;
       scrollFilmstripToCursor();
+      requestAnimationFrame(() => updateScrollFades(fs, wrap));
     }
 
     function renderSelectionTray() {
       const tray = document.getElementById('selection-tray');
+      const wrap = document.getElementById('tray-wrap');
       const sorted = Array.from(selected).sort((a, b) => a - b);
       if (sorted.length === 0) {
-        tray.classList.remove('visible');
+        wrap.classList.remove('visible');
         return;
       }
-      tray.classList.add('visible');
+      wrap.classList.add('visible');
       let html = '';
       sorted.forEach((idx, order) => {
         const t = thumbnails[idx];
@@ -521,6 +652,7 @@ export class ClipEditor {
           '</div>';
       });
       tray.innerHTML = html;
+      requestAnimationFrame(() => updateScrollFades(tray, wrap));
     }
 
     function updateMainView() {
@@ -587,9 +719,31 @@ export class ClipEditor {
       }
     }
 
+    // --- Scroll fade listeners ---
+    document.getElementById('filmstrip').addEventListener('scroll', () => {
+      updateScrollFades(document.getElementById('filmstrip'), document.getElementById('filmstrip-wrap'));
+    });
+    document.getElementById('selection-tray').addEventListener('scroll', () => {
+      updateScrollFades(document.getElementById('selection-tray'), document.getElementById('tray-wrap'));
+    });
+
+    // --- Arrow pulse helper ---
+    function pulseArrow(btn) {
+      btn.classList.remove('pulse');
+      void btn.offsetWidth; // reflow to restart animation
+      btn.classList.add('pulse');
+      setTimeout(() => btn.classList.remove('pulse'), 300);
+    }
+
     // --- Event handlers ---
-    document.getElementById('nav-left').addEventListener('click', () => setCursor(cursor - 1));
-    document.getElementById('nav-right').addEventListener('click', () => setCursor(cursor + 1));
+    document.getElementById('nav-left').addEventListener('click', (e) => {
+      pulseArrow(e.currentTarget);
+      setCursor(cursor - 1);
+    });
+    document.getElementById('nav-right').addEventListener('click', (e) => {
+      pulseArrow(e.currentTarget);
+      setCursor(cursor + 1);
+    });
     document.getElementById('main-frame').addEventListener('click', () => toggleSelection(cursor));
 
     document.getElementById('filmstrip').addEventListener('click', (e) => {

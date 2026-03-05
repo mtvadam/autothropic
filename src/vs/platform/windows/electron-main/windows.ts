@@ -150,7 +150,8 @@ export function defaultBrowserWindowOptions(accessor: ServicesAccessor, windowSt
 			// Enable experimental css highlight api https://chromestatus.com/feature/5436441440026624
 			// Refs https://github.com/microsoft/vscode/issues/140098
 			enableBlinkFeatures: 'HighlightAPI',
-			sandbox: true
+			sandbox: true,
+			webviewTag: true,
 		},
 		experimentalDarkMode: true
 	};

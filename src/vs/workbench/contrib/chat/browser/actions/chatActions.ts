@@ -90,7 +90,7 @@ class OpenChatGlobalAction extends Action2 {
 		super({
 			id: CHAT_OPEN_ACTION_ID,
 			title: OpenChatGlobalAction.TITLE,
-			icon: Codicon.copilot,
+			icon: Codicon.sparkle,
 			f1: true,
 			precondition: ContextKeyExpr.or(
 				ChatContextKeys.Setup.installed,
@@ -488,16 +488,16 @@ export function registerChatActions() {
 		});
 	}
 
-	registerOpenLinkAction('workbench.action.chat.managePlan', localize2('managePlan', "Manage Copilot Plan"), defaultChat.managePlanUrl, 1);
-	registerOpenLinkAction('workbench.action.chat.manageSettings', localize2('manageSettings', "Manage Copilot Settings"), defaultChat.manageSettingsUrl, 2);
-	registerOpenLinkAction('workbench.action.chat.learnMore', localize2('learnMore', "Learn More"), defaultChat.documentationUrl, 3);
+	registerOpenLinkAction('workbench.action.chat.managePlan', localize2('managePlan', "Autothropic on GitHub"), 'https://github.com/autothropic', 1);
+	registerOpenLinkAction('workbench.action.chat.manageSettings', localize2('manageSettings', "Autothropic Settings"), defaultChat.manageSettingsUrl, 2);
+	registerOpenLinkAction('workbench.action.chat.learnMore', localize2('learnMore', "Autothropic Docs"), 'https://docs.autothropic.com', 3);
 
 	registerAction2(class ShowExtensionsUsingCopilit extends Action2 {
 
 		constructor() {
 			super({
 				id: 'workbench.action.chat.showExtensionsUsingCopilot',
-				title: localize2('showCopilotUsageExtensions', "Show Extensions using Copilot"),
+				title: localize2('showCopilotUsageExtensions', "Show Extensions using Autothropic"),
 				f1: true,
 				category: EXTENSIONS_CATEGORY,
 			});
@@ -529,8 +529,8 @@ const defaultChat = {
 
 MenuRegistry.appendMenuItem(MenuId.CommandCenter, {
 	submenu: MenuId.ChatCommandCenter,
-	title: localize('title4', "Chat"),
-	icon: Codicon.copilot,
+	title: localize('title4', "Autothropic"),
+	icon: Codicon.sparkle,
 	when: ContextKeyExpr.and(
 		ContextKeyExpr.has('config.chat.commandCenter.enabled'),
 		ContextKeyExpr.or(
@@ -546,8 +546,8 @@ registerAction2(class ToggleCopilotControl extends ToggleTitleBarConfigAction {
 	constructor() {
 		super(
 			'chat.commandCenter.enabled',
-			localize('toggle.chatControl', 'Copilot Controls'),
-			localize('toggle.chatControlsDescription', "Toggle visibility of the Copilot Controls in title bar"), 4, false,
+			localize('toggle.chatControl', 'Autothropic Controls'),
+			localize('toggle.chatControlsDescription', "Toggle visibility of the Autothropic Controls in title bar"), 4, false,
 			ContextKeyExpr.and(
 				ContextKeyExpr.has('config.window.commandCenter'),
 				ContextKeyExpr.or(
@@ -595,21 +595,21 @@ export class ChatCommandCenterRendering extends Disposable implements IWorkbench
 			let primaryActionIcon: ThemeIcon;
 			if (!chatExtensionInstalled) {
 				primaryActionId = 'workbench.action.chat.triggerSetup';
-				primaryActionTitle = localize('triggerChatSetup', "Use AI Features with Copilot for Free...");
-				primaryActionIcon = Codicon.copilot;
+				primaryActionTitle = localize('triggerChatSetup', "Use Autothropic AI Features...");
+				primaryActionIcon = Codicon.sparkle;
 			} else {
 				if (signedOut) {
 					primaryActionId = CHAT_OPEN_ACTION_ID;
-					primaryActionTitle = localize('signInToChatSetup', "Sign in to Use Copilot...");
-					primaryActionIcon = Codicon.copilotWarning;
+					primaryActionTitle = localize('signInToChatSetup', "Sign in to Use Autothropic...");
+					primaryActionIcon = Codicon.sparkle;
 				} else if (chatQuotaExceeded || completionsQuotaExceeded) {
 					primaryActionId = OPEN_CHAT_QUOTA_EXCEEDED_DIALOG;
 					primaryActionTitle = quotaToButtonMessage({ chatQuotaExceeded, completionsQuotaExceeded });
-					primaryActionIcon = Codicon.copilotWarning;
+					primaryActionIcon = Codicon.sparkle;
 				} else {
 					primaryActionId = CHAT_OPEN_ACTION_ID;
 					primaryActionTitle = OpenChatGlobalAction.TITLE.value;
-					primaryActionIcon = Codicon.copilot;
+					primaryActionIcon = Codicon.sparkle;
 				}
 			}
 			return instantiationService.createInstance(DropdownWithPrimaryActionViewItem, instantiationService.createInstance(MenuItemAction, {

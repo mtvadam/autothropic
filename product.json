@@ -40,7 +40,8 @@
 	},
 	"configurationDefaults": {
 		"workbench.startupEditor": "none",
-		"workbench.panel.defaultLocation": "bottom"
+		"workbench.panel.defaultLocation": "bottom",
+		"window.restoreWindows": "none"
 	},
 	"builtInExtensions": [
 		{

@@ -252,7 +252,7 @@ export class SessionManager {
 		const session = this.sessions.get(id);
 		if (!session) { return; }
 
-		session.terminal.dispose();
+		session.terminal?.dispose();
 		this.sessions.delete(id);
 
 		for (const [edgeId, edge] of this.edges) {
@@ -299,7 +299,7 @@ export class SessionManager {
 		const session = this.sessions.get(id);
 		if (session) {
 			session.name = name;
-			session.terminal.processId.then(pid => {
+			session.terminal?.processId.then(pid => {
 				if (pid) {
 					vscode.commands.executeCommand('_workbench.action.terminal.renameByPid', { pid, name });
 				}
@@ -356,9 +356,10 @@ export class SessionManager {
 		const systemPrompt = session.systemPrompt;
 		const themeColorId = COLOR_TO_THEME[color] || 'charts.orange';
 
-		const oldTerminal = session.terminal;
-		this.restartingTerminals.add(oldTerminal);
-		oldTerminal.dispose();
+		if (session.terminal) {
+			this.restartingTerminals.add(session.terminal);
+			session.terminal.dispose();
+		}
 
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 		const env: Record<string, string | null> = { CLAUDECODE: null };
@@ -424,7 +425,7 @@ export class SessionManager {
 		if (upstream.length > 0) { parts.push(`Input from: ${upstream.join(', ')}`); }
 		if (downstream.length > 0) { parts.push(`Output goes to: ${downstream.join(', ')}`); }
 		parts.push('Structure your responses clearly so downstream agents can parse them.');
-		session.terminal.sendText(parts.join(' '));
+		session.terminal?.sendText(parts.join(' '));
 	}
 
 	addEdge(from: string, to: string, condition: EdgeCondition = 'all', maxIterations = 0, _skipAwareness = false): SessionEdge | undefined {
@@ -598,26 +599,49 @@ export class SessionManager {
 	}
 
 	/**
-	 * Clear persisted session state so old agents don't auto-spawn on next launch.
-	 * Also disposes any leftover non-Build terminals from previous session.
+	 * Restore persisted sessions as dormant (no terminal, status 'exited').
+	 * They appear in sidebar/graph but don't launch claude until user restarts them.
 	 */
-	clearPersistedSessions(): void {
-		const BUILD_NAME = '\u26A1 Build';
-		for (const terminal of vscode.window.terminals) {
-			if (terminal.name === BUILD_NAME) { continue; }
-			// Dispose leftover agent terminals from previous session
-			const isAgent = this.findSessionByTerminal(terminal);
-			if (!isAgent) {
-				// Check if it looks like a restored agent terminal
-				const name = terminal.name;
-				if (name.startsWith('Agent ') || this.pendingAdoption.some(p => p.name === name)) {
-					terminal.dispose();
-				}
+	restoreDormantSessions(): number {
+		const persisted = this.pendingAdoption;
+		const restoredIds = new Set<string>();
+		let count = 0;
+
+		for (const match of persisted) {
+			const session: AgentSession = {
+				id: match.id,
+				name: match.name,
+				terminal: undefined,
+				status: 'exited',
+				color: match.color,
+				graphPosition: match.graphPosition,
+				systemPrompt: match.systemPrompt,
+				humanInLoop: match.humanInLoop,
+				createdAt: match.createdAt,
+			};
+			this.sessions.set(session.id, session);
+			restoredIds.add(session.id);
+			count++;
+
+			const m = session.name.match(/^Agent (\d+)$/);
+			if (m) {
+				this.counter = Math.max(this.counter, parseInt(m[1], 10));
 			}
 		}
+
+		for (const edge of this.pendingEdges) {
+			if (restoredIds.has(edge.from) && restoredIds.has(edge.to)) {
+				this.edges.set(edge.id, { ...edge, iterationCount: 0, lastResetAt: Date.now() });
+			}
+		}
+
 		this.pendingAdoption = [];
 		this.pendingEdges = [];
-		this.context.globalState.update('agentSessions', undefined);
+
+		if (count > 0) {
+			this._onChanged.fire();
+		}
+		return count;
 	}
 
 	/**

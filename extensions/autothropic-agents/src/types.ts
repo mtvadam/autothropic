@@ -5,7 +5,7 @@ export type SessionStatus = 'running' | 'waiting' | 'input_needed' | 'error' | '
 export interface AgentSession {
 	id: string;
 	name: string;
-	terminal: vscode.Terminal;
+	terminal?: vscode.Terminal;
 	status: SessionStatus;
 	color: string;
 	graphPosition: { x: number; y: number };

@@ -82,7 +82,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autothropic.agents.pauseAll', () => {
 			for (const s of sessionManager.getSessions()) {
-				if (s.status !== 'paused') {
+				if (s.status !== 'paused' && s.terminal) {
 					sessionManager.setSessionStatus(s.id, 'paused');
 					s.terminal.sendText('\x03', false);
 				}
@@ -109,9 +109,9 @@ export function activate(context: vscode.ExtensionContext) {
 				placeHolder: 'Enter a prompt...',
 			});
 			if (!message) { return; }
-			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting');
+			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting' && s.terminal);
 			for (const s of idle) {
-				s.terminal.sendText(message);
+				s.terminal!.sendText(message);
 				sessionManager.setSessionStatus(s.id, 'running');
 			}
 			vscode.window.showInformationMessage(`Broadcasted to ${idle.length} agent(s)`);
@@ -311,9 +311,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('_autothropic.agents.broadcast', (message: string) => {
 			if (!message) { return 0; }
-			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting');
+			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting' && s.terminal);
 			for (const s of idle) {
-				s.terminal.sendText(message);
+				s.terminal!.sendText(message);
 				sessionManager.setSessionStatus(s.id, 'running');
 			}
 			return idle.length;
@@ -323,7 +323,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('_autothropic.agents.focusTerminal', (id: string) => {
 			const session = sessionManager.getSession(id);
-			if (session) {
+			if (session?.terminal) {
 				session.terminal.show();
 			}
 		})
@@ -426,9 +426,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// =============================================
 
 	setTimeout(() => {
-		// Kill all restored agent terminals from previous session.
-		// VS Code restores terminals with shellPath='claude', which auto-launches
-		// claude instances. We must dispose them before enabling adoption.
+		// Kill restored agent terminals from previous session (VS Code restores
+		// terminals with shellPath='claude' which auto-launches claude instances).
 		const BUILD_NAME = '\u26A1 Build';
 		for (const terminal of vscode.window.terminals) {
 			if (terminal.name === BUILD_NAME) { continue; }
@@ -438,8 +437,9 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		}
 
-		// Clear persisted session state
-		sessionManager.clearPersistedSessions();
+		// Restore persisted sessions as dormant (shown in sidebar/graph, no terminal).
+		// User can restart them to launch claude.
+		sessionManager.restoreDormantSessions();
 
 		// NOW enable adoption for new terminals created by the user
 		adoptionEnabled = true;

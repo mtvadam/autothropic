@@ -10,7 +10,7 @@ const ENTER_DELAY_MS = 300;
  */
 export function sendToSession(sessionManager: SessionManager, targetId: string, message: string): void {
   const session = sessionManager.getSession(targetId);
-  if (!session) { return; }
+  if (!session?.terminal) { return; }
 
   suppressSession(targetId, SUPPRESS_MS);
 
@@ -19,7 +19,7 @@ export function sendToSession(sessionManager: SessionManager, targetId: string, 
   session.terminal.sendText(BS + message + BE, false);
 
   setTimeout(() => {
-    session.terminal.sendText('', true); // sends Enter
+    session.terminal?.sendText('', true); // sends Enter
   }, ENTER_DELAY_MS);
 }
 
@@ -29,10 +29,8 @@ export function sendToSession(sessionManager: SessionManager, targetId: string, 
  */
 export function appendToSessionInput(sessionManager: SessionManager, targetId: string, text: string): void {
   const session = sessionManager.getSession(targetId);
-  if (!session) { return; }
+  if (!session?.terminal) { return; }
 
-  // Use bracket paste to insert text without triggering shell interpretation,
-  // but don't send Enter — user will do that after adding context.
   const BS = '\x1b[200~';
   const BE = '\x1b[201~';
   session.terminal.sendText(BS + text + BE, false);

@@ -445,7 +445,6 @@ export class CodeApplication extends Disposable {
 
 			// All Windows: only allow about:blank auxiliary windows to open
 			// For all other URLs, delegate to the OS.
-			// Exception: preview webview popups (OAuth, auth) open as real windows.
 			contents.setWindowOpenHandler(details => {
 
 				// about:blank windows can open as window witho our default options
@@ -458,32 +457,11 @@ export class CodeApplication extends Disposable {
 					};
 				}
 
-				// Preview webview popups: allow OAuth/auth flows to open as real windows
-				if (isPreviewContent()) {
-					this.logService.trace(`[preview] webContents#setWindowOpenHandler: Allowing preview popup for ${details.url}`);
-					return {
-						action: 'allow',
-						overrideBrowserWindowOptions: {
-							width: 500,
-							height: 700,
-							autoHideMenuBar: true,
-							webPreferences: {
-								nodeIntegration: false,
-								contextIsolation: true,
-								sandbox: true,
-							}
-						}
-					};
-				}
-
-				// Any other URL: delegate to OS
-				else {
-					this.logService.trace(`webContents#setWindowOpenHandler: Prevented opening window with URL ${details.url}}`);
-
-					this.nativeHostMainService?.openExternal(undefined, details.url);
-
-					return { action: 'deny' };
-				}
+				// Deny all other window opens (including from preview webview).
+				// Preview navigations are handled renderer-side by loading in the webview.
+				this.logService.trace(`webContents#setWindowOpenHandler: Prevented opening window with URL ${details.url}}`);
+				this.nativeHostMainService?.openExternal(undefined, details.url);
+				return { action: 'deny' };
 			});
 		});
 

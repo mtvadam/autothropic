@@ -141,18 +141,11 @@ export class SessionManager {
 			env,
 		});
 
-		// Prevent Claude Code from discovering and opening windows in external
-		// VS Code instances. Clear IPC hook, remove VS Code from PATH (so `code`
-		// CLI can't be found), and temporarily hide the code.lock file.
-		const setupCmd = [
-			'$env:VSCODE_IPC_HOOK_CLI=""',
-			'$env:PATH=($env:PATH -split ";" | Where-Object { $_ -notmatch "VS Code" }) -join ";"',
-		].join('; ');
 		const fullPrompt = this.buildSystemPrompt(sessionName, systemPrompt);
 		if (fullPrompt) {
-			terminal.sendText(`${setupCmd}; claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
+			terminal.sendText(`claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
 		} else {
-			terminal.sendText(`${setupCmd}; claude`);
+			terminal.sendText('claude');
 		}
 
 		const session: AgentSession = {
@@ -368,11 +361,10 @@ export class SessionManager {
 			env,
 		});
 
-		const setupCmd = '$env:VSCODE_IPC_HOOK_CLI=""; $env:PATH=($env:PATH -split ";" | Where-Object { $_ -notmatch "VS Code" }) -join ";"';
 		if (systemPrompt) {
-			newTerminal.sendText(`${setupCmd}; claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
+			newTerminal.sendText(`claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
 		} else {
-			newTerminal.sendText(`${setupCmd}; claude`);
+			newTerminal.sendText('claude');
 		}
 
 		session.terminal = newTerminal;

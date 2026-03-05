@@ -141,15 +141,22 @@ export class SessionManager {
 			env,
 		});
 
-		// Build the claude command with topology-aware system prompt.
-		// We prefix with env overrides to prevent claude from opening
-		// VS Code windows via IPC or the `code` CLI.
-		const cleanEnv = 'VSCODE_IPC_HOOK_CLI= VSCODE_GIT_IPC_HANDLE= VSCODE_PID= VSCODE_INJECTION= TERM_PROGRAM=autothropic EDITOR=cat VISUAL=cat';
+		// Clear VS Code IPC env vars so claude CLI can't open VS Code windows,
+		// then launch claude. Use PowerShell syntax since Windows terminals default to PS.
+		const unsetVars = [
+			'$env:VSCODE_IPC_HOOK_CLI=""',
+			'$env:VSCODE_GIT_IPC_HANDLE=""',
+			'$env:VSCODE_PID=""',
+			'$env:VSCODE_INJECTION=""',
+			'$env:TERM_PROGRAM="autothropic"',
+			'$env:EDITOR="cat"',
+			'$env:VISUAL="cat"',
+		].join('; ');
 		const fullPrompt = this.buildSystemPrompt(systemPrompt);
 		if (fullPrompt) {
-			terminal.sendText(`env ${cleanEnv} claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
+			terminal.sendText(`${unsetVars}; claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
 		} else {
-			terminal.sendText(`env ${cleanEnv} claude`);
+			terminal.sendText(`${unsetVars}; claude`);
 		}
 
 		const session: AgentSession = {
@@ -362,11 +369,11 @@ export class SessionManager {
 			env,
 		});
 
-		const cleanEnv = 'VSCODE_IPC_HOOK_CLI= VSCODE_GIT_IPC_HANDLE= VSCODE_PID= VSCODE_INJECTION= TERM_PROGRAM=autothropic EDITOR=cat VISUAL=cat';
+		const unsetVars = '$env:VSCODE_IPC_HOOK_CLI=""; $env:VSCODE_GIT_IPC_HANDLE=""; $env:VSCODE_PID=""; $env:VSCODE_INJECTION=""; $env:TERM_PROGRAM="autothropic"; $env:EDITOR="cat"; $env:VISUAL="cat"';
 		if (systemPrompt) {
-			newTerminal.sendText(`env ${cleanEnv} claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
+			newTerminal.sendText(`${unsetVars}; claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
 		} else {
-			newTerminal.sendText(`env ${cleanEnv} claude`);
+			newTerminal.sendText(`${unsetVars}; claude`);
 		}
 
 		session.terminal = newTerminal;

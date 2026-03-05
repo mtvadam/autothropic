@@ -141,12 +141,15 @@ export class SessionManager {
 			env,
 		});
 
-		// Build the claude command with topology-aware system prompt
+		// Build the claude command with topology-aware system prompt.
+		// We prefix with env overrides to prevent claude from opening
+		// VS Code windows via IPC or the `code` CLI.
+		const cleanEnv = 'VSCODE_IPC_HOOK_CLI= VSCODE_GIT_IPC_HANDLE= VSCODE_PID= VSCODE_INJECTION= TERM_PROGRAM=autothropic EDITOR=cat VISUAL=cat';
 		const fullPrompt = this.buildSystemPrompt(systemPrompt);
 		if (fullPrompt) {
-			terminal.sendText(`claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
+			terminal.sendText(`env ${cleanEnv} claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
 		} else {
-			terminal.sendText('claude');
+			terminal.sendText(`env ${cleanEnv} claude`);
 		}
 
 		const session: AgentSession = {
@@ -359,10 +362,11 @@ export class SessionManager {
 			env,
 		});
 
+		const cleanEnv = 'VSCODE_IPC_HOOK_CLI= VSCODE_GIT_IPC_HANDLE= VSCODE_PID= VSCODE_INJECTION= TERM_PROGRAM=autothropic EDITOR=cat VISUAL=cat';
 		if (systemPrompt) {
-			newTerminal.sendText(`claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
+			newTerminal.sendText(`env ${cleanEnv} claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
 		} else {
-			newTerminal.sendText('claude');
+			newTerminal.sendText(`env ${cleanEnv} claude`);
 		}
 
 		session.terminal = newTerminal;
@@ -584,6 +588,29 @@ export class SessionManager {
 			this.pendingAdoption = saved.sessions ?? [];
 			this.pendingEdges = saved.edges ?? [];
 		}
+	}
+
+	/**
+	 * Clear persisted session state so old agents don't auto-spawn on next launch.
+	 * Also disposes any leftover non-Build terminals from previous session.
+	 */
+	clearPersistedSessions(): void {
+		const BUILD_NAME = '\u26A1 Build';
+		for (const terminal of vscode.window.terminals) {
+			if (terminal.name === BUILD_NAME) { continue; }
+			// Dispose leftover agent terminals from previous session
+			const isAgent = this.findSessionByTerminal(terminal);
+			if (!isAgent) {
+				// Check if it looks like a restored agent terminal
+				const name = terminal.name;
+				if (name.startsWith('Agent ') || this.pendingAdoption.some(p => p.name === name)) {
+					terminal.dispose();
+				}
+			}
+		}
+		this.pendingAdoption = [];
+		this.pendingEdges = [];
+		this.context.globalState.update('agentSessions', undefined);
 	}
 
 	/**

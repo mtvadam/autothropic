@@ -35,11 +35,11 @@ export class PreviewService extends Disposable implements IPreviewService {
 	// Clip buffer state
 	private _clipFrames: ClipFrame[] = [];
 	private _clipSnapshot: ClipFrame[] = [];
-	private _clipTimer: ReturnType<typeof mainWindow.setInterval> | null = null;
+	private _clipTimer: number | null = null;
 	private _clipActive = false;
 	private _clipCapturing = false;
-	private readonly _maxClipFrames = 25; // 5 FPS × 5 seconds
-	private readonly _captureIntervalMs = 200; // 5 FPS
+	private readonly _maxClipFrames = 50; // 10 FPS x 5 seconds
+	private readonly _captureIntervalMs = 100; // 10 FPS
 
 	constructor(
 		@IEditorService private readonly editorService: IEditorService,
@@ -100,13 +100,11 @@ export class PreviewService extends Disposable implements IPreviewService {
 	/** Called by PreviewEditor to register the <webview> element. */
 	registerWebview(element: Electron.WebviewTag | null): void {
 		this._webviewElement = element;
-		// Pause capture when webview is gone, but keep frames
 		if (!element) {
 			this._pauseClipBuffer();
-		} else if (this._clipActive && !this._clipTimer) {
-			// Resume if was active before pause
-			this._clipTimer = mainWindow.setInterval(() => this._captureClipFrame(), this._captureIntervalMs);
-			console.log('[preview] clip buffer resumed');
+		} else {
+			// Always recording: auto-start capture when webview is available
+			this.startClipBuffer();
 		}
 	}
 
@@ -117,26 +115,14 @@ export class PreviewService extends Disposable implements IPreviewService {
 	startClipBuffer(): void {
 		if (this._clipActive && this._clipTimer) { return; }
 		if (!this._webviewElement) { return; }
-		// Only clear frames on a true fresh start (not a resume)
-		if (!this._clipActive) {
-			this._clipFrames = [];
-			this._clipSnapshot = [];
-		}
 		this._clipActive = true;
 		if (this._clipTimer) { mainWindow.clearInterval(this._clipTimer); }
 		this._clipTimer = mainWindow.setInterval(() => this._captureClipFrame(), this._captureIntervalMs);
-		console.log('[preview] clip buffer started (5 FPS)');
+		console.log('[preview] clip buffer started (10 FPS, always-on)');
 	}
 
 	stopClipBuffer(): void {
-		this._clipActive = false;
-		if (this._clipTimer) {
-			mainWindow.clearInterval(this._clipTimer);
-			this._clipTimer = null;
-		}
-		this._clipFrames = [];
-		this._clipSnapshot = [];
-		console.log('[preview] clip buffer stopped');
+		// No-op: always recording, old frames evicted past _maxClipFrames
 	}
 
 	/** Pause capture but keep existing frames intact */
@@ -251,7 +237,13 @@ export class PreviewService extends Disposable implements IPreviewService {
 	}
 
 	override dispose(): void {
-		this.stopClipBuffer();
+		this._clipActive = false;
+		if (this._clipTimer) {
+			mainWindow.clearInterval(this._clipTimer);
+			this._clipTimer = null;
+		}
+		this._clipFrames = [];
+		this._clipSnapshot = [];
 		super.dispose();
 	}
 }

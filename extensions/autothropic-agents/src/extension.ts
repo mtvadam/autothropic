@@ -30,16 +30,12 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Auto-restart when Claude Code exits
+	// Mark session as exited when Claude Code exits (no auto-restart)
 	context.subscriptions.push(
 		outputDetector.onExited(async (sessionId) => {
 			const session = sessionManager.getSession(sessionId);
 			if (!session) { return; }
-			if (session.status === 'waiting') { return; }
-
-			outputDetector.clearBuffer(sessionId);
-			sessionManager.restartSession(sessionId);
-			vscode.window.showInformationMessage(`Auto-restarted "${session.name}"`);
+			sessionManager.setSessionStatus(sessionId, 'exited');
 		})
 	);
 
@@ -430,13 +426,29 @@ export function activate(context: vscode.ExtensionContext) {
 	// =============================================
 
 	setTimeout(() => {
-		const adopted = sessionManager.adoptRestoredTerminals();
+		// Kill all restored agent terminals from previous session.
+		// VS Code restores terminals with shellPath='claude', which auto-launches
+		// claude instances. We must dispose them before enabling adoption.
+		const BUILD_NAME = '\u26A1 Build';
+		for (const terminal of vscode.window.terminals) {
+			if (terminal.name === BUILD_NAME) { continue; }
+			const creationOpts = (terminal as any).creationOptions;
+			if (creationOpts?.shellPath === 'claude') {
+				terminal.dispose();
+			}
+		}
+
+		// Clear persisted session state
+		sessionManager.clearPersistedSessions();
+
+		// NOW enable adoption for new terminals created by the user
+		adoptionEnabled = true;
 
 		// Auto-open graph panel
 		vscode.commands.executeCommand('autothropic.graphView.focus').then(undefined, () => {});
 
 		// Show tutorial hint for first-time users
-		if (adopted === 0 && sessionManager.getSessions().length === 0) {
+		if (sessionManager.getSessions().length === 0) {
 			const hasSeenTutorial = context.globalState.get<boolean>('hasSeenTutorial');
 			if (!hasSeenTutorial) {
 				vscode.window.showInformationMessage(
@@ -472,10 +484,14 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Adopt terminals created by our profile into the session manager
+	// Adopt terminals created by our profile into the session manager.
+	// Block adoption during startup so restored terminals from previous session
+	// don't get re-adopted (VS Code restores terminals with shellPath='claude'
+	// which auto-runs claude in each one).
+	let adoptionEnabled = false;
 	context.subscriptions.push(
 		vscode.window.onDidOpenTerminal((terminal) => {
-			// Check if this terminal was created by our profile (runs claude directly)
+			if (!adoptionEnabled) { return; }
 			const creationOpts = (terminal as any).creationOptions;
 			if (creationOpts?.shellPath === 'claude' && !sessionManager.getSessionByTerminal(terminal)) {
 				sessionManager.adoptTerminal(terminal);
@@ -483,12 +499,9 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Set our agent profile as the default terminal so "+" always spawns agents
-	const termConfig = vscode.workspace.getConfiguration('terminal.integrated');
-	const currentDefault = termConfig.get<string>('defaultProfile.windows');
-	if (currentDefault !== 'Autothropic Agent') {
-		termConfig.update('defaultProfile.windows', 'Autothropic Agent', vscode.ConfigurationTarget.Global).then(undefined, () => {});
-	}
+	// Don't override the default terminal profile — doing so causes every
+	// terminal (including ones Claude Code opens internally) to run claude,
+	// cascading into dozens of windows. Users spawn agents via the sidebar.
 
 	// Terminal cleanup
 	context.subscriptions.push(

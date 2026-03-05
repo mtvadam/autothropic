@@ -210,23 +210,17 @@ export class PreviewEditor extends EditorPane {
 			this.updateHostnameInChrome(url);
 		});
 
-		// Handle popups (OAuth, external links, window.open)
-		// Let Electron handle popup windows natively -- the main process
-		// allows popups from webview guests (see app.ts setWindowOpenHandler).
-		// OAuth flows need a real popup window so the auth provider can
-		// redirect back and the webview's session receives the cookies.
-		// We only intercept non-popup navigations (e.g. target="_blank" links
-		// that should stay in the same webview).
+		// Block ALL new-window requests -- load them in the webview instead.
+		// Without this, window.open() calls from the previewed site cause
+		// Electron to spawn full VS Code windows.
 		webview.addEventListener('new-window', (e: any) => {
 			const url = e.url;
 			if (!url) { return; }
-			// target="_blank" links that aren't popups: load in webview
-			if (e.disposition === 'foreground-tab' || e.disposition === 'background-tab') {
-				e.preventDefault();
+			e.preventDefault();
+			// Load navigations in the webview itself
+			if (url.startsWith('http://') || url.startsWith('https://')) {
 				webview.loadURL(url);
 			}
-			// 'new-window' disposition (window.open): let Electron open the popup
-			// so OAuth flows work with their own window
 		});
 
 		// (load failure tracking is in the did-fail-load listener above)
@@ -235,11 +229,7 @@ export class PreviewEditor extends EditorPane {
 		webview.addEventListener('before-input-event', (e: any) => {
 			const input = e?.input;
 			const key = input?.key || e?.key;
-			if (key === 'F12') {
-				this.previewService.openDevTools();
-			}
-			// Ctrl+Shift+I -- intercept before VS Code gets it
-			if (key === 'I' && input?.control && input?.shift && !input?.alt) {
+			if (key === 'F12' || (key === 'I' && input?.control && input?.shift && !input?.alt)) {
 				this.previewService.openDevTools();
 			}
 		});
@@ -339,13 +329,16 @@ export class PreviewEditor extends EditorPane {
 	window.__autothropicBridge = true;
 	var isMobile = ${isMobile};
 
+	// Bridge: use console.debug (verbose level) so bridge messages are hidden
+	// by default in DevTools (verbose is off by default). The console-message
+	// event on the webview tag still fires at level 0 so the host picks them up.
 	function send(channel, data) {
-		console.log('__ABRIDGE__' + JSON.stringify({ ch: channel, d: data }));
+		console.debug('__ABRIDGE__' + JSON.stringify({ ch: channel, d: data }));
 	}
 
 	// Scroll detection -- wheel (primary) + scroll (secondary)
 	var lastDir = '';
-	mainWindow.document.addEventListener('wheel', function(e) {
+	document.addEventListener('wheel', function(e) {
 		if (Math.abs(e.deltaY) < 5) return;
 		var dir = e.deltaY > 0 ? 'down' : 'up';
 		if (dir !== lastDir) { lastDir = dir; send('scroll', { dir: dir }); }
@@ -364,8 +357,8 @@ export class PreviewEditor extends EditorPane {
 		document.documentElement.appendChild(ind);
 		var indTimer = null;
 		updateScrollInd = function() {
-			var docH = Math.max(document.documentElement.scrollHeight, mainWindow.document.body.scrollHeight);
-			var viewH = mainWindow.innerHeight;
+			var docH = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+			var viewH = window.innerHeight;
 			var scrollY = window.scrollY || 0;
 			if (docH <= viewH) { ind.style.opacity = '0'; return; }
 			var trackH = viewH - 8;
@@ -384,7 +377,7 @@ export class PreviewEditor extends EditorPane {
 	var lastFaviconHref = '';
 	function sendMeta() {
 		var bgColor = '';
-		try { bgColor = mainWindow.getComputedStyle(mainWindow.document.body).backgroundColor; } catch(e) {}
+		try { bgColor = getComputedStyle(document.body).backgroundColor; } catch(e) {}
 		var title = document.title || '';
 		var faviconHref = '';
 		var link = document.querySelector('link[rel*="icon"]');
@@ -416,7 +409,7 @@ export class PreviewEditor extends EditorPane {
 		var els = document.querySelectorAll('nav, [role="navigation"], footer');
 		for (var i = 0; i < els.length; i++) {
 			var rect = els[i].getBoundingClientRect();
-			if (rect.bottom >= mainWindow.innerHeight - 20 && rect.height < 100 && rect.height > 30) {
+			if (rect.bottom >= window.innerHeight - 20 && rect.height < 100 && rect.height > 30) {
 				found = true;
 				break;
 			}

@@ -11,7 +11,8 @@ interface AgentInfo {
 }
 
 export class ImageEditor {
-  private panel: vscode.WebviewPanel | undefined;
+  private static _counter = 0;
+  private panels = new Set<vscode.WebviewPanel>();
 
   private readonly _onSend = new vscode.EventEmitter<{ filePaths: string[]; agentId: string }>();
   readonly onSend = this._onSend.event;
@@ -19,13 +20,11 @@ export class ImageEditor {
   constructor(private readonly extensionUri: vscode.Uri) {}
 
   async show(imagePath: string): Promise<void> {
-    // Read the image as a data URL
     const imageBuffer = await vscode.workspace.fs.readFile(vscode.Uri.file(imagePath));
     const ext = path.extname(imagePath).toLowerCase().replace('.', '');
     const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
     const dataUrl = `data:${mime};base64,${Buffer.from(imageBuffer).toString('base64')}`;
 
-    // Fetch agents for "Send to" dropdown
     let agents: AgentInfo[] = [];
     try {
       agents = await vscode.commands.executeCommand<AgentInfo[]>(
@@ -33,49 +32,48 @@ export class ImageEditor {
       ) ?? [];
     } catch { /* agents extension not available */ }
 
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.One);
-      this.panel.webview.postMessage({ type: 'loadImage', dataUrl, imagePath, agents });
-    } else {
-      this.panel = vscode.window.createWebviewPanel(
-        'autothropic.imageEditor',
-        'Screenshot Editor',
-        vscode.ViewColumn.One,
-        {
-          enableScripts: true,
-          retainContextWhenHidden: true,
-          localResourceRoots: [this.extensionUri],
-        },
-      );
+    ImageEditor._counter++;
+    const title = `Screenshot ${ImageEditor._counter}`;
 
-      this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'screenshot-icon.svg');
+    const panel = vscode.window.createWebviewPanel(
+      'autothropic.imageEditor',
+      title,
+      vscode.ViewColumn.One,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this.extensionUri],
+      },
+    );
 
-      this.panel.onDidDispose(() => {
-        this.panel = undefined;
-      });
+    panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'screenshot-icon.svg');
+    this.panels.add(panel);
 
-      this.panel.webview.onDidReceiveMessage(async (msg) => {
-        switch (msg.type) {
-          case 'send':
-            await this.handleSend(msg.dataUrl, msg.agentId);
-            break;
-          case 'save':
-            await this.handleSave(msg.dataUrl);
-            break;
-          case 'copy':
-            await this.handleCopy(msg.dataUrl);
-            break;
-          case 'discard':
-            this.panel?.dispose();
-            break;
-        }
-      });
+    panel.onDidDispose(() => {
+      this.panels.delete(panel);
+    });
 
-      this.panel.webview.html = this.getHtml(dataUrl, imagePath, agents);
-    }
+    panel.webview.onDidReceiveMessage(async (msg) => {
+      switch (msg.type) {
+        case 'send':
+          await this.handleSend(panel, msg.dataUrl, msg.agentId);
+          break;
+        case 'save':
+          await this.handleSave(msg.dataUrl);
+          break;
+        case 'copy':
+          await this.handleCopy(msg.dataUrl);
+          break;
+        case 'discard':
+          panel.dispose();
+          break;
+      }
+    });
+
+    panel.webview.html = this.getHtml(dataUrl, imagePath, agents);
   }
 
-  private async handleSend(dataUrl: string, agentId: string): Promise<void> {
+  private async handleSend(_panel: vscode.WebviewPanel, dataUrl: string, agentId: string): Promise<void> {
     const filePath = await this.saveDataUrlToTemp(dataUrl);
     if (filePath) {
       this._onSend.fire({ filePaths: [filePath], agentId });
@@ -96,7 +94,6 @@ export class ImageEditor {
 
   private async handleCopy(dataUrl: string): Promise<void> {
     try {
-      // Copy actual image to system clipboard using Electron's nativeImage
       const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Buffer.from(base64, 'base64');
       const { clipboard, nativeImage } = require('electron');
@@ -104,7 +101,6 @@ export class ImageEditor {
       clipboard.writeImage(img);
       vscode.window.showInformationMessage('Image copied to clipboard');
     } catch {
-      // Fallback: save to temp and copy path
       const filePath = await this.saveDataUrlToTemp(dataUrl);
       if (filePath) {
         await vscode.env.clipboard.writeText(filePath);
@@ -200,9 +196,10 @@ body {
 .color-swatch:hover { border-color: #555; }
 .color-swatch.active { border-color: #e8e5de; }
 .color-input {
-  width: 18px;
-  height: 18px;
-  border: none;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--vscode-panel-border, #2a2a26);
+  border-radius: 4px;
   background: none;
   cursor: pointer;
   padding: 0;
@@ -333,22 +330,6 @@ body {
   line-height: 1.3;
 }
 
-/* Color picker area */
-.color-picker-wrap {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.color-input {
-  width: 24px;
-  height: 24px;
-  border: 2px solid var(--vscode-panel-border, #2a2a26);
-  border-radius: 4px;
-  background: none;
-  cursor: pointer;
-  padding: 0;
-}
-
 /* Eraser cursor */
 .canvas-container.eraser-active { cursor: none !important; }
 .eraser-cursor {
@@ -456,12 +437,10 @@ body {
 
   <script>
     const vscode = acquireVsCodeApi();
-
-    // --- State ---
     let currentTool = 'pen';
     let currentColor = '#ff3b30';
     let currentWidth = 4;
-    let operations = [];  // { type, points, color, width, text, x, y, fontSize, ... }
+    let operations = [];
     let redoStack = [];
     let isDrawing = false;
     let startX = 0, startY = 0;
@@ -480,13 +459,9 @@ body {
     const eraserCursor = document.getElementById('eraser-cursor');
     const widthInput = document.getElementById('width-input');
 
-    // --- Load image ---
     function loadImage(dataUrl) {
       img = new Image();
-      img.onload = function() {
-        fitCanvases();
-        redrawAll();
-      };
+      img.onload = function() { fitCanvases(); redrawAll(); };
       img.src = dataUrl;
     }
 
@@ -498,7 +473,6 @@ body {
       displayScale = Math.min(maxW / img.width, maxH / img.height, 1);
       const w = Math.round(img.width * displayScale);
       const h = Math.round(img.height * displayScale);
-
       bgCanvas.width = w; bgCanvas.height = h;
       drawCanvas.width = w; drawCanvas.height = h;
       previewCanvas.width = w; previewCanvas.height = h;
@@ -506,446 +480,9 @@ body {
       container.style.height = h + 'px';
     }
 
-    function redrawAll() {
-      if (!img) return;
-      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
-      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
-
-      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      for (const op of operations) {
-        drawOperation(drawCtx, op);
-      }
-
-      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    }
-
-    // Redraw with eraser live preview: composites bg + draw + eraser preview
-    function redrawWithEraserPreview() {
-      if (!img) return;
-      // Draw bg + existing ops onto drawCanvas
-      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
-      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
-
-      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      for (const op of operations) {
-        drawOperation(drawCtx, op);
-      }
-      // Now apply the current eraser stroke to drawCanvas as a preview
-      if (currentPoints.length >= 2) {
-        drawOperation(drawCtx, {
-          type: 'eraser',
-          points: currentPoints,
-          color: currentColor,
-          width: currentWidth,
-        });
-      }
-    }
-
-    function drawOperation(ctx, op) {
-      ctx.save();
-      ctx.strokeStyle = op.color;
-      ctx.fillStyle = op.color;
-      ctx.lineWidth = op.width;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      switch (op.type) {
-        case 'pen': {
-          if (op.points.length < 2) break;
-          ctx.beginPath();
-          ctx.moveTo(op.points[0].x, op.points[0].y);
-          for (let i = 1; i < op.points.length; i++) {
-            ctx.lineTo(op.points[i].x, op.points[i].y);
-          }
-          ctx.stroke();
-          break;
-        }
-        case 'line': {
-          ctx.beginPath();
-          ctx.moveTo(op.x1, op.y1);
-          ctx.lineTo(op.x2, op.y2);
-          ctx.stroke();
-          break;
-        }
-        case 'rect': {
-          ctx.beginPath();
-          ctx.strokeRect(op.x, op.y, op.w, op.h);
-          break;
-        }
-        case 'arrow': {
-          const dx = op.x2 - op.x1;
-          const dy = op.y2 - op.y1;
-          const angle = Math.atan2(dy, dx);
-          const headLen = Math.max(10, op.width * 3);
-          ctx.beginPath();
-          ctx.moveTo(op.x1, op.y1);
-          ctx.lineTo(op.x2, op.y2);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(op.x2, op.y2);
-          ctx.lineTo(op.x2 - headLen * Math.cos(angle - Math.PI / 6), op.y2 - headLen * Math.sin(angle - Math.PI / 6));
-          ctx.moveTo(op.x2, op.y2);
-          ctx.lineTo(op.x2 - headLen * Math.cos(angle + Math.PI / 6), op.y2 - headLen * Math.sin(angle + Math.PI / 6));
-          ctx.stroke();
-          break;
-        }
-        case 'text': {
-          const fontSize = op.fontSize || Math.max(14, op.width * 4);
-          ctx.font = 'bold ' + fontSize + 'px system-ui, -apple-system, sans-serif';
-          const lines = (op.text || '').split('\\n');
-          for (let i = 0; i < lines.length; i++) {
-            ctx.fillText(lines[i], op.x, op.y + i * (fontSize * 1.3));
-          }
-          break;
-        }
-        case 'eraser': {
-          ctx.globalCompositeOperation = 'destination-out';
-          ctx.lineWidth = op.width * 4;
-          if (op.points.length < 2) break;
-          ctx.beginPath();
-          ctx.moveTo(op.points[0].x, op.points[0].y);
-          for (let i = 1; i < op.points.length; i++) {
-            ctx.lineTo(op.points[i].x, op.points[i].y);
-          }
-          ctx.stroke();
-          break;
-        }
-      }
-      ctx.restore();
-    }
-
-    // --- Eraser cursor ---
-    function updateEraserCursor(e) {
-      if (currentTool !== 'eraser') {
-        eraserCursor.style.display = 'none';
-        container.classList.remove('eraser-active');
-        return;
-      }
-      container.classList.add('eraser-active');
-      const rect = container.getBoundingClientRect();
-      const size = currentWidth * 4;
-      eraserCursor.style.display = 'block';
-      eraserCursor.style.width = size + 'px';
-      eraserCursor.style.height = size + 'px';
-      eraserCursor.style.left = (e.clientX - rect.left - size / 2) + 'px';
-      eraserCursor.style.top = (e.clientY - rect.top - size / 2) + 'px';
-    }
-
-    // --- Mouse events on preview canvas ---
-    function getCanvasPos(e) {
-      const rect = previewCanvas.getBoundingClientRect();
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    }
-
-    previewCanvas.addEventListener('mousedown', function(e) {
-      if (currentTool === 'text') {
-        const pos = getCanvasPos(e);
-        showTextInput(pos.x, pos.y);
-        return;
-      }
-      isDrawing = true;
-      const pos = getCanvasPos(e);
-      startX = pos.x;
-      startY = pos.y;
-      currentPoints = [{ x: pos.x, y: pos.y }];
-    });
-
-    previewCanvas.addEventListener('mousemove', function(e) {
-      updateEraserCursor(e);
-
-      if (!isDrawing) return;
-      const pos = getCanvasPos(e);
-
-      if (currentTool === 'eraser') {
-        // Live eraser: draw directly onto drawCanvas composite
-        currentPoints.push({ x: pos.x, y: pos.y });
-        redrawWithEraserPreview();
-        return;
-      }
-
-      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-
-      if (currentTool === 'pen') {
-        currentPoints.push({ x: pos.x, y: pos.y });
-        drawOperation(previewCtx, {
-          type: 'pen',
-          points: currentPoints,
-          color: currentColor,
-          width: currentWidth,
-        });
-      } else if (currentTool === 'line') {
-        drawOperation(previewCtx, {
-          type: 'line',
-          x1: startX, y1: startY,
-          x2: pos.x, y2: pos.y,
-          color: currentColor,
-          width: currentWidth,
-        });
-      } else if (currentTool === 'rect') {
-        drawOperation(previewCtx, {
-          type: 'rect',
-          x: Math.min(startX, pos.x),
-          y: Math.min(startY, pos.y),
-          w: Math.abs(pos.x - startX),
-          h: Math.abs(pos.y - startY),
-          color: currentColor,
-          width: currentWidth,
-        });
-      } else if (currentTool === 'arrow') {
-        drawOperation(previewCtx, {
-          type: 'arrow',
-          x1: startX, y1: startY,
-          x2: pos.x, y2: pos.y,
-          color: currentColor,
-          width: currentWidth,
-        });
-      }
-    });
-
-    previewCanvas.addEventListener('mouseup', function(e) {
-      if (!isDrawing) return;
-      isDrawing = false;
-      const pos = getCanvasPos(e);
-
-      let op = null;
-      if (currentTool === 'pen') {
-        currentPoints.push({ x: pos.x, y: pos.y });
-        op = { type: 'pen', points: currentPoints.slice(), color: currentColor, width: currentWidth };
-      } else if (currentTool === 'eraser') {
-        currentPoints.push({ x: pos.x, y: pos.y });
-        op = { type: 'eraser', points: currentPoints.slice(), color: currentColor, width: currentWidth };
-      } else if (currentTool === 'line') {
-        op = { type: 'line', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth };
-      } else if (currentTool === 'rect') {
-        op = { type: 'rect', x: Math.min(startX, pos.x), y: Math.min(startY, pos.y), w: Math.abs(pos.x - startX), h: Math.abs(pos.y - startY), color: currentColor, width: currentWidth };
-      } else if (currentTool === 'arrow') {
-        op = { type: 'arrow', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth };
-      }
-
-      if (op) {
-        operations.push(op);
-        redoStack = [];
-        redrawAll();
-      }
-
-      currentPoints = [];
-    });
-
-    previewCanvas.addEventListener('mouseleave', function() {
-      eraserCursor.style.display = 'none';
-      if (isDrawing) {
-        isDrawing = false;
-        if (currentTool === 'pen' || currentTool === 'eraser') {
-          if (currentPoints.length > 1) {
-            operations.push({ type: currentTool, points: currentPoints.slice(), color: currentColor, width: currentWidth });
-            redoStack = [];
-          }
-        }
-        currentPoints = [];
-        redrawAll();
-      }
-    });
-
-    // --- Text input ---
-    function showTextInput(x, y) {
-      const overlay = document.getElementById('text-input-overlay');
-      const input = document.getElementById('text-input');
-      const fontSize = Math.max(14, currentWidth * 4);
-      overlay.style.display = 'block';
-      overlay.style.left = x + 'px';
-      overlay.style.top = y + 'px';
-      input.style.color = currentColor;
-      input.style.fontSize = fontSize + 'px';
-      input.value = '';
-      // Delay focus so blur doesn't immediately fire
-      setTimeout(function() { input.focus(); }, 50);
-    }
-
-    function commitText() {
-      const overlay = document.getElementById('text-input-overlay');
-      const input = document.getElementById('text-input');
-      if (overlay.style.display === 'none') return;
-      const text = input.value.trim();
-      if (text) {
-        const x = parseInt(overlay.style.left);
-        const y = parseInt(overlay.style.top);
-        const fontSize = Math.max(14, currentWidth * 4);
-        operations.push({ type: 'text', text: text, x: x, y: y + fontSize, color: currentColor, width: currentWidth, fontSize: fontSize });
-        redoStack = [];
-        redrawAll();
-      }
-      overlay.style.display = 'none';
-    }
-
-    document.getElementById('text-input').addEventListener('keydown', function(e) {
-      e.stopPropagation(); // prevent tool shortcuts while typing
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        commitText();
-      }
-      if (e.key === 'Escape') {
-        document.getElementById('text-input-overlay').style.display = 'none';
-      }
-    });
-
-    document.getElementById('text-input').addEventListener('blur', function() {
-      // Small delay so clicking away commits text instead of losing it
-      setTimeout(commitText, 150);
-    });
-
-    // --- Tool selection ---
-    document.getElementById('tools').addEventListener('click', function(e) {
-      const btn = e.target.closest('.tool-button');
-      if (!btn || !btn.dataset.tool) return;
-      currentTool = btn.dataset.tool;
-      document.querySelectorAll('#tools .tool-button').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      // Update cursor
-      if (currentTool === 'eraser') {
-        container.classList.add('eraser-active');
-      } else {
-        container.classList.remove('eraser-active');
-        eraserCursor.style.display = 'none';
-      }
-    });
-
-    // --- Color selection ---
-    document.getElementById('colors').addEventListener('click', function(e) {
-      const swatch = e.target.closest('.color-swatch');
-      if (!swatch) return;
-      currentColor = swatch.dataset.color;
-      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
-      swatch.classList.add('active');
-      document.getElementById('custom-color').value = currentColor;
-    });
-
-    document.getElementById('custom-color').addEventListener('input', function(e) {
-      currentColor = e.target.value;
-      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
-    });
-
-    // --- Width selection ---
-    widthInput.addEventListener('input', function(e) {
-      const v = parseInt(e.target.value);
-      if (!isNaN(v) && v >= 1 && v <= 100) {
-        currentWidth = v;
-        // Highlight matching preset if any
-        document.querySelectorAll('.width-preset').forEach(b => {
-          b.classList.toggle('active', parseInt(b.dataset.width) === v);
-        });
-      }
-    });
-
-    document.getElementById('widths').addEventListener('click', function(e) {
-      const btn = e.target.closest('.width-preset');
-      if (!btn || !btn.dataset.width) return;
-      currentWidth = parseInt(btn.dataset.width);
-      widthInput.value = currentWidth;
-      document.querySelectorAll('.width-preset').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-
-    // --- Undo / Redo ---
-    document.getElementById('btn-undo').addEventListener('click', undo);
-    document.getElementById('btn-redo').addEventListener('click', redo);
-
-    function undo() {
-      if (operations.length === 0) return;
-      redoStack.push(operations.pop());
-      redrawAll();
-    }
-
-    function redo() {
-      if (redoStack.length === 0) return;
-      operations.push(redoStack.pop());
-      redrawAll();
-    }
-
-    // --- Clipboard: Ctrl+C to copy, Ctrl+V to paste image ---
-    document.addEventListener('paste', function(e) {
-      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          e.preventDefault();
-          const blob = items[i].getAsFile();
-          const reader = new FileReader();
-          reader.onload = function(ev) {
-            const pasteImg = new Image();
-            pasteImg.onload = function() {
-              // Paste as a new operation: draw the pasted image onto drawCanvas
-              const pasteCanvas = document.createElement('canvas');
-              pasteCanvas.width = bgCanvas.width;
-              pasteCanvas.height = bgCanvas.height;
-              const pCtx = pasteCanvas.getContext('2d');
-              // Scale pasted image to fit canvas, centered
-              const scale = Math.min(bgCanvas.width / pasteImg.width, bgCanvas.height / pasteImg.height, 1);
-              const pw = Math.round(pasteImg.width * scale);
-              const ph = Math.round(pasteImg.height * scale);
-              const px = Math.round((bgCanvas.width - pw) / 2);
-              const py = Math.round((bgCanvas.height - ph) / 2);
-              pCtx.drawImage(pasteImg, px, py, pw, ph);
-              operations.push({ type: 'pasteImage', dataUrl: pasteCanvas.toDataURL('image/png'), x: px, y: py, w: pw, h: ph });
-              redoStack = [];
-              redrawAll();
-            };
-            pasteImg.src = ev.target.result;
-          };
-          reader.readAsDataURL(blob);
-          break;
-        }
-      }
-    });
-
-    // Override drawOperation for pasteImage type
-    const origDrawOperation = drawOperation;
-    function drawOperationExt(ctx, op) {
+    function drawOp(ctx, op) {
       if (op.type === 'pasteImage') {
-        const pasteImg = new Image();
-        pasteImg.src = op.dataUrl;
-        // Synchronous draw since data URL should be loaded
-        ctx.drawImage(pasteImg, op.x, op.y, op.w, op.h);
-        return;
-      }
-      origDrawOperation(ctx, op);
-    }
-    // Patch: replace drawOperation references
-    // We need to reassign the function used in redrawAll
-    // Since functions are hoisted, we override redrawAll to use extended version
-
-    function redrawAllExt() {
-      if (!img) return;
-      bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
-      bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
-
-      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      for (const op of operations) {
-        drawOperationExt(drawCtx, op);
-      }
-      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    }
-
-    // Pre-load paste images so they render synchronously
-    function preloadPasteImages(cb) {
-      const pasteOps = operations.filter(op => op.type === 'pasteImage' && !op._img);
-      if (pasteOps.length === 0) { cb(); return; }
-      let loaded = 0;
-      pasteOps.forEach(function(op) {
-        const pImg = new Image();
-        pImg.onload = function() {
-          op._img = pImg;
-          loaded++;
-          if (loaded === pasteOps.length) cb();
-        };
-        pImg.src = op.dataUrl;
-      });
-    }
-
-    // Override drawOperation to use cached images
-    function drawOperationFinal(ctx, op) {
-      if (op.type === 'pasteImage') {
-        if (op._img) {
-          ctx.drawImage(op._img, op.x, op.y, op.w, op.h);
-        }
+        if (op._img) ctx.drawImage(op._img, op.x, op.y, op.w, op.h);
         return;
       }
       ctx.save();
@@ -954,7 +491,6 @@ body {
       ctx.lineWidth = op.width;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-
       switch (op.type) {
         case 'pen': {
           if (op.points.length < 2) break;
@@ -965,24 +501,15 @@ body {
           break;
         }
         case 'line': {
-          ctx.beginPath();
-          ctx.moveTo(op.x1, op.y1);
-          ctx.lineTo(op.x2, op.y2);
-          ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(op.x1, op.y1); ctx.lineTo(op.x2, op.y2); ctx.stroke();
           break;
         }
-        case 'rect': {
-          ctx.strokeRect(op.x, op.y, op.w, op.h);
-          break;
-        }
+        case 'rect': { ctx.strokeRect(op.x, op.y, op.w, op.h); break; }
         case 'arrow': {
           const dx = op.x2 - op.x1, dy = op.y2 - op.y1;
           const angle = Math.atan2(dy, dx);
           const headLen = Math.max(10, op.width * 3);
-          ctx.beginPath();
-          ctx.moveTo(op.x1, op.y1);
-          ctx.lineTo(op.x2, op.y2);
-          ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(op.x1, op.y1); ctx.lineTo(op.x2, op.y2); ctx.stroke();
           ctx.beginPath();
           ctx.moveTo(op.x2, op.y2);
           ctx.lineTo(op.x2 - headLen * Math.cos(angle - Math.PI / 6), op.y2 - headLen * Math.sin(angle - Math.PI / 6));
@@ -1012,28 +539,26 @@ body {
       ctx.restore();
     }
 
-    // Final versions that handle paste images properly
-    redrawAll = function() {
+    function redrawAll() {
       if (!img) return;
       bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
       bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      for (const op of operations) drawOperationFinal(drawCtx, op);
+      for (const op of operations) drawOp(drawCtx, op);
       previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    };
+    }
 
-    redrawWithEraserPreview = function() {
+    function redrawWithEraserPreview() {
       if (!img) return;
       bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
       bgCtx.drawImage(img, 0, 0, bgCanvas.width, bgCanvas.height);
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      for (const op of operations) drawOperationFinal(drawCtx, op);
+      for (const op of operations) drawOp(drawCtx, op);
       if (currentPoints.length >= 2) {
-        drawOperationFinal(drawCtx, { type: 'eraser', points: currentPoints, color: currentColor, width: currentWidth });
+        drawOp(drawCtx, { type: 'eraser', points: currentPoints, color: currentColor, width: currentWidth });
       }
-    };
+    }
 
-    // Export also uses final draw
     function getCompositeDataUrl() {
       const exportCanvas = document.createElement('canvas');
       exportCanvas.width = img.width;
@@ -1043,23 +568,194 @@ body {
       const scale = img.width / bgCanvas.width;
       ctx.save();
       ctx.scale(scale, scale);
-      for (const op of operations) drawOperationFinal(ctx, op);
+      for (const op of operations) drawOp(ctx, op);
       ctx.restore();
       return exportCanvas.toDataURL('image/png');
     }
 
-    // --- Keyboard shortcuts ---
+    function updateEraserCursor(e) {
+      if (currentTool !== 'eraser') { eraserCursor.style.display = 'none'; container.classList.remove('eraser-active'); return; }
+      container.classList.add('eraser-active');
+      const rect = container.getBoundingClientRect();
+      const size = currentWidth * 4;
+      eraserCursor.style.display = 'block';
+      eraserCursor.style.width = size + 'px';
+      eraserCursor.style.height = size + 'px';
+      eraserCursor.style.left = (e.clientX - rect.left - size / 2) + 'px';
+      eraserCursor.style.top = (e.clientY - rect.top - size / 2) + 'px';
+    }
+
+    function getCanvasPos(e) {
+      const rect = previewCanvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    previewCanvas.addEventListener('mousedown', function(e) {
+      if (currentTool === 'text') { showTextInput(getCanvasPos(e).x, getCanvasPos(e).y); return; }
+      isDrawing = true;
+      const pos = getCanvasPos(e);
+      startX = pos.x; startY = pos.y;
+      currentPoints = [{ x: pos.x, y: pos.y }];
+    });
+
+    previewCanvas.addEventListener('mousemove', function(e) {
+      updateEraserCursor(e);
+      if (!isDrawing) return;
+      const pos = getCanvasPos(e);
+      if (currentTool === 'eraser') { currentPoints.push(pos); redrawWithEraserPreview(); return; }
+      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+      if (currentTool === 'pen') { currentPoints.push(pos); drawOp(previewCtx, { type: 'pen', points: currentPoints, color: currentColor, width: currentWidth }); }
+      else if (currentTool === 'line') { drawOp(previewCtx, { type: 'line', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth }); }
+      else if (currentTool === 'rect') { drawOp(previewCtx, { type: 'rect', x: Math.min(startX, pos.x), y: Math.min(startY, pos.y), w: Math.abs(pos.x - startX), h: Math.abs(pos.y - startY), color: currentColor, width: currentWidth }); }
+      else if (currentTool === 'arrow') { drawOp(previewCtx, { type: 'arrow', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth }); }
+    });
+
+    previewCanvas.addEventListener('mouseup', function(e) {
+      if (!isDrawing) return;
+      isDrawing = false;
+      const pos = getCanvasPos(e);
+      let op = null;
+      if (currentTool === 'pen') { currentPoints.push(pos); op = { type: 'pen', points: currentPoints.slice(), color: currentColor, width: currentWidth }; }
+      else if (currentTool === 'eraser') { currentPoints.push(pos); op = { type: 'eraser', points: currentPoints.slice(), color: currentColor, width: currentWidth }; }
+      else if (currentTool === 'line') { op = { type: 'line', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth }; }
+      else if (currentTool === 'rect') { op = { type: 'rect', x: Math.min(startX, pos.x), y: Math.min(startY, pos.y), w: Math.abs(pos.x - startX), h: Math.abs(pos.y - startY), color: currentColor, width: currentWidth }; }
+      else if (currentTool === 'arrow') { op = { type: 'arrow', x1: startX, y1: startY, x2: pos.x, y2: pos.y, color: currentColor, width: currentWidth }; }
+      if (op) { operations.push(op); redoStack = []; redrawAll(); }
+      currentPoints = [];
+    });
+
+    previewCanvas.addEventListener('mouseleave', function() {
+      eraserCursor.style.display = 'none';
+      if (isDrawing) {
+        isDrawing = false;
+        if ((currentTool === 'pen' || currentTool === 'eraser') && currentPoints.length > 1) {
+          operations.push({ type: currentTool, points: currentPoints.slice(), color: currentColor, width: currentWidth });
+          redoStack = [];
+        }
+        currentPoints = [];
+        redrawAll();
+      }
+    });
+
+    function showTextInput(x, y) {
+      const overlay = document.getElementById('text-input-overlay');
+      const input = document.getElementById('text-input');
+      const fontSize = Math.max(14, currentWidth * 4);
+      overlay.style.display = 'block';
+      overlay.style.left = x + 'px';
+      overlay.style.top = y + 'px';
+      input.style.color = currentColor;
+      input.style.fontSize = fontSize + 'px';
+      input.value = '';
+      setTimeout(function() { input.focus(); }, 50);
+    }
+
+    function commitText() {
+      const overlay = document.getElementById('text-input-overlay');
+      const input = document.getElementById('text-input');
+      if (overlay.style.display === 'none') return;
+      const text = input.value.trim();
+      if (text) {
+        const fontSize = Math.max(14, currentWidth * 4);
+        operations.push({ type: 'text', text: text, x: parseInt(overlay.style.left), y: parseInt(overlay.style.top) + fontSize, color: currentColor, width: currentWidth, fontSize: fontSize });
+        redoStack = [];
+        redrawAll();
+      }
+      overlay.style.display = 'none';
+    }
+
+    document.getElementById('text-input').addEventListener('keydown', function(e) {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitText(); }
+      if (e.key === 'Escape') { document.getElementById('text-input-overlay').style.display = 'none'; }
+    });
+    document.getElementById('text-input').addEventListener('blur', function() { setTimeout(commitText, 150); });
+
+    document.getElementById('tools').addEventListener('click', function(e) {
+      const btn = e.target.closest('.tool-button');
+      if (!btn || !btn.dataset.tool) return;
+      selectTool(btn.dataset.tool);
+    });
+
+    document.getElementById('colors').addEventListener('click', function(e) {
+      const swatch = e.target.closest('.color-swatch');
+      if (!swatch) return;
+      currentColor = swatch.dataset.color;
+      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+      swatch.classList.add('active');
+      document.getElementById('custom-color').value = currentColor;
+    });
+
+    document.getElementById('custom-color').addEventListener('input', function(e) {
+      currentColor = e.target.value;
+      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    });
+
+    widthInput.addEventListener('input', function(e) {
+      const v = parseInt(e.target.value);
+      if (!isNaN(v) && v >= 1 && v <= 100) {
+        currentWidth = v;
+        document.querySelectorAll('.width-preset').forEach(b => b.classList.toggle('active', parseInt(b.dataset.width) === v));
+      }
+    });
+
+    document.getElementById('widths').addEventListener('click', function(e) {
+      const btn = e.target.closest('.width-preset');
+      if (!btn || !btn.dataset.width) return;
+      currentWidth = parseInt(btn.dataset.width);
+      widthInput.value = currentWidth;
+      document.querySelectorAll('.width-preset').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+
+    document.getElementById('btn-undo').addEventListener('click', undo);
+    document.getElementById('btn-redo').addEventListener('click', redo);
+    function undo() { if (operations.length === 0) return; redoStack.push(operations.pop()); redrawAll(); }
+    function redo() { if (redoStack.length === 0) return; operations.push(redoStack.pop()); redrawAll(); }
+
+    document.addEventListener('paste', function(e) {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          e.preventDefault();
+          const blob = items[i].getAsFile();
+          const reader = new FileReader();
+          reader.onload = function(ev) {
+            const pasteImg = new Image();
+            pasteImg.onload = function() {
+              const scale = Math.min(bgCanvas.width / pasteImg.width, bgCanvas.height / pasteImg.height, 1);
+              const pw = Math.round(pasteImg.width * scale);
+              const ph = Math.round(pasteImg.height * scale);
+              const px = Math.round((bgCanvas.width - pw) / 2);
+              const py = Math.round((bgCanvas.height - ph) / 2);
+              const c = document.createElement('canvas');
+              c.width = bgCanvas.width; c.height = bgCanvas.height;
+              c.getContext('2d').drawImage(pasteImg, px, py, pw, ph);
+              const op = { type: 'pasteImage', dataUrl: c.toDataURL('image/png'), x: px, y: py, w: pw, h: ph, _img: pasteImg };
+              operations.push(op);
+              redoStack = [];
+              redrawAll();
+            };
+            pasteImg.src = ev.target.result;
+          };
+          reader.readAsDataURL(blob);
+          break;
+        }
+      }
+    });
+
+    function selectTool(tool) {
+      currentTool = tool;
+      document.querySelectorAll('#tools .tool-button').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+      if (tool === 'eraser') { container.classList.add('eraser-active'); }
+      else { container.classList.remove('eraser-active'); eraserCursor.style.display = 'none'; }
+    }
+
     document.addEventListener('keydown', function(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); redo(); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        e.preventDefault();
-        vscode.postMessage({ type: 'copy', dataUrl: getCompositeDataUrl() });
-        return;
-      }
-
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); vscode.postMessage({ type: 'copy', dataUrl: getCompositeDataUrl() }); return; }
       switch (e.key.toLowerCase()) {
         case 'p': selectTool('pen'); break;
         case 'l': selectTool('line'); break;
@@ -1070,57 +766,16 @@ body {
       }
     });
 
-    function selectTool(tool) {
-      currentTool = tool;
-      document.querySelectorAll('#tools .tool-button').forEach(b => {
-        b.classList.toggle('active', b.dataset.tool === tool);
-      });
-      if (tool === 'eraser') {
-        container.classList.add('eraser-active');
-      } else {
-        container.classList.remove('eraser-active');
-        eraserCursor.style.display = 'none';
-      }
-    }
-
-    // --- Action buttons ---
     document.getElementById('btn-send').addEventListener('click', function() {
       const agentSel = document.getElementById('agent-select');
-      const agentId = agentSel ? agentSel.value : '';
-      vscode.postMessage({ type: 'send', dataUrl: getCompositeDataUrl(), agentId: agentId });
+      vscode.postMessage({ type: 'send', dataUrl: getCompositeDataUrl(), agentId: agentSel ? agentSel.value : '' });
     });
+    document.getElementById('btn-save').addEventListener('click', function() { vscode.postMessage({ type: 'save', dataUrl: getCompositeDataUrl() }); });
+    document.getElementById('btn-copy').addEventListener('click', function() { vscode.postMessage({ type: 'copy', dataUrl: getCompositeDataUrl() }); });
+    document.getElementById('btn-discard').addEventListener('click', function() { vscode.postMessage({ type: 'discard' }); });
 
-    document.getElementById('btn-save').addEventListener('click', function() {
-      vscode.postMessage({ type: 'save', dataUrl: getCompositeDataUrl() });
-    });
+    window.addEventListener('resize', function() { if (img && img.complete) { fitCanvases(); redrawAll(); } });
 
-    document.getElementById('btn-copy').addEventListener('click', function() {
-      vscode.postMessage({ type: 'copy', dataUrl: getCompositeDataUrl() });
-    });
-
-    document.getElementById('btn-discard').addEventListener('click', function() {
-      vscode.postMessage({ type: 'discard' });
-    });
-
-    // --- Handle messages from extension ---
-    window.addEventListener('message', function(e) {
-      const msg = e.data;
-      if (msg.type === 'loadImage') {
-        operations = [];
-        redoStack = [];
-        loadImage(msg.dataUrl);
-      }
-    });
-
-    // --- Window resize ---
-    window.addEventListener('resize', function() {
-      if (img && img.complete) {
-        fitCanvases();
-        redrawAll();
-      }
-    });
-
-    // --- Initial load ---
     loadImage(${JSON.stringify(dataUrl)});
     ${defaultAgent ? `if (document.getElementById('agent-select')) { document.getElementById('agent-select').value = ${JSON.stringify(defaultAgent.id)}; }` : ''}
   </script>
@@ -1130,6 +785,7 @@ body {
 
   dispose(): void {
     this._onSend.dispose();
-    this.panel?.dispose();
+    for (const p of this.panels) { p.dispose(); }
+    this.panels.clear();
   }
 }

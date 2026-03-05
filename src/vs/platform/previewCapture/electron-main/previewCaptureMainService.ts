@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { BrowserWindow, nativeImage, session, WebFrameMain } from 'electron';
+import { BrowserWindow, nativeImage, session, webContents, WebFrameMain } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -660,6 +660,46 @@ export class PreviewCaptureMainService extends Disposable implements IPreviewCap
 		// Chrome: microseconds since Jan 1, 1601
 		// Unix: seconds since Jan 1, 1970
 		return Math.floor(chromeTime / 1000000) - 11644473600;
+	}
+
+	/**
+	 * Capture the preview webview's guest WebContents at full page resolution.
+	 * Finds the guest by URL prefix, calls capturePage() on it directly -
+	 * unaffected by any CSS transforms in the host renderer.
+	 */
+	async captureGuestFullRes(urlPrefix: string): Promise<{ dataUrl: string } | null> {
+		const prefix = urlPrefix.replace(/\/+$/, '');
+		for (const wc of webContents.getAllWebContents()) {
+			if (wc.isDestroyed()) { continue; }
+			try {
+				const url = wc.getURL();
+				if (url && url.startsWith(prefix)) {
+					const image = await wc.capturePage();
+					if (!image.isEmpty()) {
+						const size = image.getSize();
+						this.logService.info(`[previewCapture] guest full-res capture: ${size.width}x${size.height}`);
+						return { dataUrl: 'data:image/png;base64,' + image.toPNG().toString('base64') };
+					}
+				}
+			} catch { /* destroyed mid-iteration */ }
+		}
+		// Also try localhost ↔ 127.0.0.1 variant
+		const altPrefix = prefix.includes('localhost')
+			? prefix.replace('localhost', '127.0.0.1')
+			: prefix.replace('127.0.0.1', 'localhost');
+		for (const wc of webContents.getAllWebContents()) {
+			if (wc.isDestroyed()) { continue; }
+			try {
+				const url = wc.getURL();
+				if (url && url.startsWith(altPrefix)) {
+					const image = await wc.capturePage();
+					if (!image.isEmpty()) {
+						return { dataUrl: 'data:image/png;base64,' + image.toPNG().toString('base64') };
+					}
+				}
+			} catch { /* destroyed mid-iteration */ }
+		}
+		return null;
 	}
 
 	override dispose(): void {

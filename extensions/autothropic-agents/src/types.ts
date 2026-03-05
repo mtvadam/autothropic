@@ -5,13 +5,17 @@ export type SessionStatus = 'running' | 'waiting' | 'input_needed' | 'error' | '
 export interface AgentSession {
 	id: string;
 	name: string;
-	terminal?: vscode.Terminal;
+	terminal: vscode.Terminal;
 	status: SessionStatus;
 	color: string;
 	graphPosition: { x: number; y: number };
 	systemPrompt?: string;
 	humanInLoop?: boolean;
 	createdAt: number;
+	/** Number of auto-restarts since last manual interaction */
+	restartCount: number;
+	/** Timestamp of last auto-restart */
+	lastRestartAt: number;
 }
 
 export type EdgeCondition = 'all' | 'code-changes' | 'errors' | 'summary-only';

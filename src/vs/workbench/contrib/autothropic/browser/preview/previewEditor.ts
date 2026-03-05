@@ -280,8 +280,38 @@ export class PreviewEditor extends EditorPane {
 	}
 
 	private async doScreenshot(): Promise<void> {
-		// Delegate to extension command -- saves to file, opens image editor for drawing
-		await this.commandService.executeCommand('autothropic.preview.screenshot');
+		try {
+			// Try main-process guest capture first - captures at native resolution
+			// regardless of CSS transform scaling, no DOM manipulation needed
+			if (this.currentDisplayUrl) {
+				const result = await this.commandService.executeCommand<{ dataUrl: string } | null>(
+					'_autothropic.capture.guestFullRes', this.currentDisplayUrl
+				);
+				if (result?.dataUrl) {
+					console.log('[preview] screenshot via main-process guest capture');
+					await this.commandService.executeCommand('autothropic.preview.screenshot.withData', result.dataUrl);
+					return;
+				}
+			}
+
+			// Fallback: renderer-side capturePage (may be scaled down)
+			if (this.webviewElement) {
+				const image = await this.webviewElement.capturePage();
+				if (image && !image.isEmpty()) {
+					const size = image.getSize();
+					console.log(`[preview] screenshot renderer fallback: ${size.width}x${size.height}`);
+					const dataUrl = image.toDataURL();
+					await this.commandService.executeCommand('autothropic.preview.screenshot.withData', dataUrl);
+					return;
+				}
+			}
+
+			// Last resort: extension-side capture
+			await this.commandService.executeCommand('autothropic.preview.screenshot');
+		} catch (err) {
+			console.error('[preview] doScreenshot failed:', err);
+			await this.commandService.executeCommand('autothropic.preview.screenshot');
+		}
 	}
 
 	private navigateTo(url: string): void {

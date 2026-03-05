@@ -48,13 +48,16 @@ export interface IPreviewService {
 	stopClipBuffer(): void;
 
 	/** Get thumbnails for the last N seconds of captured frames. */
-	getClipThumbnails(seconds: number): ClipThumbnailData[];
+	getClipThumbnails(seconds: number): Promise<ClipThumbnailData[]>;
 
 	/** Run scene detection and return suggested keyframe indices. */
 	getSuggestedIndices(seconds: number, maxFrames: number): number[];
 
 	/** Get selected frames as PNG data URLs. */
 	grabSelectedDataUrls(indices: number[]): string[];
+
+	/** Capture a single full-resolution frame (for clip editor main view). */
+	captureFullResFrame(): Promise<string | null>;
 
 	/** Check if the clip buffer is active. */
 	getClipStatus(): { active: boolean; frameCount: number };

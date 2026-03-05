@@ -187,9 +187,9 @@ CommandsRegistry.registerCommand('_autothropic.capture.stopClipBuffer', (accesso
 	previewService.stopClipBuffer();
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.getClipThumbnails', (accessor, seconds: number) => {
+CommandsRegistry.registerCommand('_autothropic.capture.getClipThumbnails', async (accessor, seconds: number) => {
 	const previewService = accessor.get(IPreviewService);
-	return previewService.getClipThumbnails(seconds);
+	return await previewService.getClipThumbnails(seconds);
 });
 
 CommandsRegistry.registerCommand('_autothropic.capture.getSuggestedIndices', (accessor, seconds: number, maxFrames: number) => {
@@ -197,13 +197,25 @@ CommandsRegistry.registerCommand('_autothropic.capture.getSuggestedIndices', (ac
 	return previewService.getSuggestedIndices(seconds, maxFrames);
 });
 
-CommandsRegistry.registerCommand('_autothropic.capture.grabSelected', (accessor, indices: number[]) => {
+CommandsRegistry.registerCommand('_autothropic.capture.grabSelected', async (accessor, indices: number[]) => {
 	const previewService = accessor.get(IPreviewService);
+	// Get buffer thumbnails for the selected frames
 	const dataUrls = previewService.grabSelectedDataUrls(indices);
+	// Try to capture a full-resolution frame to replace the first selected thumbnail
+	const fullRes = await previewService.captureFullResFrame();
+	if (fullRes && dataUrls.length > 0) {
+		// Replace the most recent frame with the full-res capture
+		dataUrls[dataUrls.length - 1] = fullRes;
+	}
 	return { filePaths: [], dataUrls };
 });
 
 CommandsRegistry.registerCommand('_autothropic.capture.getClipStatus', (accessor) => {
 	const previewService = accessor.get(IPreviewService);
 	return previewService.getClipStatus();
+});
+
+CommandsRegistry.registerCommand('_autothropic.capture.fullResFrame', async (accessor) => {
+	const previewService = accessor.get(IPreviewService);
+	return await previewService.captureFullResFrame();
 });

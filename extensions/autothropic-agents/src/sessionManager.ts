@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
+import { execSync } from 'child_process';
 import type {
 	AgentSession, SessionEdge, SessionStatus, EdgeCondition,
 	ActivityLogEntry, SessionMessage, SerializableSession, TopologyPreset,
@@ -13,6 +17,24 @@ function escapeShellArg(arg: string): string {
 	const oneLine = arg.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
 	return `'${oneLine.replace(/'/g, "''")}'`;
 }
+
+/**
+ * Environment overrides for agent terminals.
+ * Prevents Claude Code CLI from detecting VS Code and triggering window operations.
+ * `null` means "delete from inherited environment".
+ */
+const AGENT_TERMINAL_ENV: Record<string, string | null> = {
+	CLAUDECODE: null,
+	TERM_PROGRAM: 'xterm-256color',      // Override VS Code's 'vscode' value
+	TERM_PROGRAM_VERSION: null,           // Remove VS Code version
+	VSCODE_IPC_HOOK_CLI: null,            // Remove CLI IPC pipe
+	VSCODE_GIT_IPC_HANDLE: null,          // Remove git IPC
+	VSCODE_GIT_ASKPASS_NODE: null,
+	VSCODE_GIT_ASKPASS_EXTRA_ARGS: null,
+	VSCODE_GIT_ASKPASS_MAIN: null,
+	GIT_ASKPASS: null,
+	ELECTRON_RUN_AS_NODE: null,
+};
 
 const AGENT_COLORS = [
 	'#d97757', '#539bf5', '#57ab5a', '#9d4edd',
@@ -97,6 +119,32 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
 	},
 ];
 
+// ---------------------------------------------------------------------------
+// Docker agent isolation
+// ---------------------------------------------------------------------------
+
+const DOCKER_IMAGE = 'autothropic-agent';
+
+const DOCKERFILE_CONTENT = `FROM node:20-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git openssh-client curl wget ca-certificates \\
+    build-essential python3 \\
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @anthropic-ai/claude-code
+WORKDIR /workspace
+`;
+
+/** Env vars to forward into the Docker container for Claude auth. */
+const DOCKER_PASSTHROUGH_ENV = [
+	'ANTHROPIC_API_KEY',
+	'CLAUDE_CODE_USE_BEDROCK',
+	'AWS_ACCESS_KEY_ID',
+	'AWS_SECRET_ACCESS_KEY',
+	'AWS_DEFAULT_REGION',
+	'AWS_REGION',
+	'AWS_PROFILE',
+];
+
 function generateId(): string {
 	return `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -116,8 +164,141 @@ export class SessionManager {
 	private readonly _onChanged = new vscode.EventEmitter<void>();
 	readonly onChanged = this._onChanged.event;
 
+	/** Cached Docker availability: null = unchecked */
+	private _dockerAvailable: boolean | null = null;
+	private _dockerImageReady = false;
+	private _dockerInitializing = false;
+
 	constructor(private readonly context: vscode.ExtensionContext) {
 		this.loadState();
+	}
+
+	// --- Docker ---
+
+	/**
+	 * Kick off Docker detection + image build in the background.
+	 * Called once from extension activation.
+	 */
+	async initDocker(): Promise<void> {
+		if (this._dockerInitializing) { return; }
+		this._dockerInitializing = true;
+		try {
+			if (!this._checkDocker()) { return; }
+			await this._ensureDockerImage();
+		} finally {
+			this._dockerInitializing = false;
+		}
+	}
+
+	get dockerReady(): boolean {
+		return this._dockerAvailable === true && this._dockerImageReady;
+	}
+
+	private _checkDocker(): boolean {
+		if (this._dockerAvailable !== null) { return this._dockerAvailable; }
+		try {
+			execSync('docker info', { timeout: 10_000, stdio: 'pipe' });
+			this._dockerAvailable = true;
+		} catch {
+			this._dockerAvailable = false;
+		}
+		return this._dockerAvailable;
+	}
+
+	private async _ensureDockerImage(): Promise<boolean> {
+		if (this._dockerImageReady) { return true; }
+		// Already built?
+		try {
+			execSync(`docker image inspect ${DOCKER_IMAGE}`, { timeout: 10_000, stdio: 'pipe' });
+			this._dockerImageReady = true;
+			return true;
+		} catch { /* need to build */ }
+
+		return vscode.window.withProgress({
+			location: vscode.ProgressLocation.Notification,
+			title: 'Building agent Docker image (first time only)...',
+			cancellable: false,
+		}, async () => {
+			const tmpDir = path.join(os.tmpdir(), 'autothropic-docker');
+			fs.mkdirSync(tmpDir, { recursive: true });
+			const dockerfilePath = path.join(tmpDir, 'Dockerfile');
+			fs.writeFileSync(dockerfilePath, DOCKERFILE_CONTENT);
+			try {
+				execSync(`docker build -t ${DOCKER_IMAGE} "${tmpDir}"`, {
+					timeout: 600_000, // 10 minutes
+					stdio: 'pipe',
+				});
+				this._dockerImageReady = true;
+				return true;
+			} catch (err) {
+				vscode.window.showWarningMessage(
+					`Docker image build failed — agents will run locally. ${err}`
+				);
+				this._dockerAvailable = false;
+				return false;
+			} finally {
+				try { fs.unlinkSync(dockerfilePath); } catch { /* ok */ }
+				try { fs.rmdirSync(tmpDir); } catch { /* ok */ }
+			}
+		});
+	}
+
+	/**
+	 * Build the `docker run …` prefix for agent terminals.
+	 * Mounts workspace, Claude config, git config, and SSH keys.
+	 */
+	private _dockerRunPrefix(cwd?: string): string {
+		const workspace = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+		const home = os.homedir();
+
+		const parts = ['docker', 'run', '-it', '--rm'];
+
+		if (workspace) {
+			parts.push('-v', `"${workspace}:/workspace"`, '-w', '/workspace');
+		}
+
+		// Claude CLI config
+		const claudeDir = path.join(home, '.claude');
+		if (fs.existsSync(claudeDir)) {
+			parts.push('-v', `"${claudeDir}:/root/.claude"`);
+		}
+
+		// Git config (read-only)
+		const gitconfig = path.join(home, '.gitconfig');
+		if (fs.existsSync(gitconfig)) {
+			parts.push('-v', `"${gitconfig}:/root/.gitconfig:ro"`);
+		}
+
+		// SSH keys (read-only)
+		const sshDir = path.join(home, '.ssh');
+		if (fs.existsSync(sshDir)) {
+			parts.push('-v', `"${sshDir}:/root/.ssh:ro"`);
+		}
+
+		// Forward API keys / auth env vars
+		for (const key of DOCKER_PASSTHROUGH_ENV) {
+			if (process.env[key]) {
+				parts.push('-e', key);
+			}
+		}
+
+		parts.push(DOCKER_IMAGE);
+		return parts.join(' ');
+	}
+
+	/**
+	 * Build the full command to send to a terminal.
+	 * Uses Docker when available, falls back to local `claude`.
+	 */
+	agentCommand(systemPrompt?: string, cwd?: string): string {
+		const promptArg = systemPrompt
+			? ` --append-system-prompt ${escapeShellArg(systemPrompt)}`
+			: '';
+
+		if (this.dockerReady) {
+			return `${this._dockerRunPrefix(cwd)} claude${promptArg}`;
+		}
+		return `claude${promptArg}`;
 	}
 
 	// --- Session CRUD ---
@@ -130,7 +311,6 @@ export class SessionManager {
 		const sessionName = name ?? `Agent ${this.nextAgentNumber()}`;
 
 		const themeColorId = COLOR_TO_THEME[color] || 'charts.orange';
-		const env: Record<string, string | null> = { CLAUDECODE: null };
 		const terminalCwd = options?.cwd
 			? vscode.Uri.file(options.cwd)
 			: workspaceFolder?.uri;
@@ -138,15 +318,12 @@ export class SessionManager {
 			name: sessionName,
 			cwd: terminalCwd,
 			iconPath: new vscode.ThemeIcon('robot', new vscode.ThemeColor(themeColorId)),
-			env,
+			env: { ...AGENT_TERMINAL_ENV },
 		});
 
-		const fullPrompt = this.buildSystemPrompt(sessionName, systemPrompt);
-		if (fullPrompt) {
-			terminal.sendText(`claude --append-system-prompt ${escapeShellArg(fullPrompt)}`);
-		} else {
-			terminal.sendText('claude');
-		}
+		// Build the claude command with topology-aware system prompt
+		const fullPrompt = this.buildSystemPrompt(systemPrompt);
+		terminal.sendText(this.agentCommand(fullPrompt || undefined, options?.cwd));
 
 		const session: AgentSession = {
 			id,
@@ -157,6 +334,8 @@ export class SessionManager {
 			graphPosition: { x: 200 + (this.counter - 1) * 220, y: 200 },
 			systemPrompt: systemPrompt || undefined,
 			createdAt: Date.now(),
+			restartCount: 0,
+			lastRestartAt: 0,
 		};
 
 		this.sessions.set(id, session);
@@ -204,6 +383,8 @@ export class SessionManager {
 			color,
 			graphPosition: { x: 200 + (this.counter - 1) * 220, y: 200 },
 			createdAt: Date.now(),
+			restartCount: 0,
+			lastRestartAt: 0,
 		};
 
 		this.sessions.set(id, session);
@@ -216,10 +397,8 @@ export class SessionManager {
 	 * Build a rich system prompt that includes topology awareness.
 	 * Each agent gets context about the full team and its connections.
 	 */
-	private buildSystemPrompt(agentName: string, basePrompt?: string): string {
+	private buildSystemPrompt(basePrompt?: string): string {
 		const parts: string[] = [];
-
-		parts.push(`Your name is "${agentName}".`);
 
 		if (basePrompt) {
 			parts.push(basePrompt);
@@ -243,7 +422,7 @@ export class SessionManager {
 		const session = this.sessions.get(id);
 		if (!session) { return; }
 
-		session.terminal?.dispose();
+		session.terminal.dispose();
 		this.sessions.delete(id);
 
 		for (const [edgeId, edge] of this.edges) {
@@ -290,7 +469,7 @@ export class SessionManager {
 		const session = this.sessions.get(id);
 		if (session) {
 			session.name = name;
-			session.terminal?.processId.then(pid => {
+			session.terminal.processId.then(pid => {
 				if (pid) {
 					vscode.commands.executeCommand('_workbench.action.terminal.renameByPid', { pid, name });
 				}
@@ -335,37 +514,67 @@ export class SessionManager {
 		}
 	}
 
+	/** Max auto-restarts before giving up (resets on manual restart or user interaction). */
+	private static readonly MAX_AUTO_RESTARTS = 3;
+	/** Minimum seconds between auto-restarts (exponential backoff: 10s, 20s, 40s). */
+	private static readonly BASE_RESTART_COOLDOWN_MS = 10_000;
+
+	/**
+	 * Check if an auto-restart is allowed for this session.
+	 * Returns false if cooldown hasn't elapsed or max retries exceeded.
+	 */
+	canAutoRestart(id: string): boolean {
+		const session = this.sessions.get(id);
+		if (!session) { return false; }
+
+		if (session.restartCount >= SessionManager.MAX_AUTO_RESTARTS) {
+			return false;
+		}
+
+		if (session.lastRestartAt > 0) {
+			const backoff = SessionManager.BASE_RESTART_COOLDOWN_MS * Math.pow(2, session.restartCount);
+			const elapsed = Date.now() - session.lastRestartAt;
+			if (elapsed < backoff) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	/**
 	 * Restart Claude Code by disposing the old terminal and creating a fresh one.
+	 * @param manual If true, resets the restart counter (user-initiated restart).
 	 */
-	restartSession(id: string): void {
+	restartSession(id: string, manual = false): void {
 		const session = this.sessions.get(id);
 		if (!session) { return; }
+
+		if (manual) {
+			session.restartCount = 0;
+		} else {
+			session.restartCount++;
+		}
+		session.lastRestartAt = Date.now();
 
 		const name = session.name;
 		const color = session.color;
 		const systemPrompt = session.systemPrompt;
 		const themeColorId = COLOR_TO_THEME[color] || 'charts.orange';
 
-		if (session.terminal) {
-			this.restartingTerminals.add(session.terminal);
-			session.terminal.dispose();
-		}
+		const oldTerminal = session.terminal;
+		this.restartingTerminals.add(oldTerminal);
+		oldTerminal.dispose();
 
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-		const env: Record<string, string | null> = { CLAUDECODE: null };
 		const newTerminal = vscode.window.createTerminal({
 			name,
 			cwd: workspaceFolder?.uri,
 			iconPath: new vscode.ThemeIcon('robot', new vscode.ThemeColor(themeColorId)),
-			env,
+			env: { ...AGENT_TERMINAL_ENV },
 		});
 
-		if (systemPrompt) {
-			newTerminal.sendText(`claude --append-system-prompt ${escapeShellArg(systemPrompt)}`);
-		} else {
-			newTerminal.sendText('claude');
-		}
+		newTerminal.sendText(this.agentCommand(systemPrompt || undefined));
 
 		session.terminal = newTerminal;
 		session.status = 'waiting';
@@ -415,7 +624,7 @@ export class SessionManager {
 		if (upstream.length > 0) { parts.push(`Input from: ${upstream.join(', ')}`); }
 		if (downstream.length > 0) { parts.push(`Output goes to: ${downstream.join(', ')}`); }
 		parts.push('Structure your responses clearly so downstream agents can parse them.');
-		session.terminal?.sendText(parts.join(' '));
+		session.terminal.sendText(parts.join(' '));
 	}
 
 	addEdge(from: string, to: string, condition: EdgeCondition = 'all', maxIterations = 0, _skipAwareness = false): SessionEdge | undefined {
@@ -589,52 +798,6 @@ export class SessionManager {
 	}
 
 	/**
-	 * Restore persisted sessions as dormant (no terminal, status 'exited').
-	 * They appear in sidebar/graph but don't launch claude until user restarts them.
-	 */
-	restoreDormantSessions(): number {
-		const persisted = this.pendingAdoption;
-		const restoredIds = new Set<string>();
-		let count = 0;
-
-		for (const match of persisted) {
-			const session: AgentSession = {
-				id: match.id,
-				name: match.name,
-				terminal: undefined,
-				status: 'exited',
-				color: match.color,
-				graphPosition: match.graphPosition,
-				systemPrompt: match.systemPrompt,
-				humanInLoop: match.humanInLoop,
-				createdAt: match.createdAt,
-			};
-			this.sessions.set(session.id, session);
-			restoredIds.add(session.id);
-			count++;
-
-			const m = session.name.match(/^Agent (\d+)$/);
-			if (m) {
-				this.counter = Math.max(this.counter, parseInt(m[1], 10));
-			}
-		}
-
-		for (const edge of this.pendingEdges) {
-			if (restoredIds.has(edge.from) && restoredIds.has(edge.to)) {
-				this.edges.set(edge.id, { ...edge, iterationCount: 0, lastResetAt: Date.now() });
-			}
-		}
-
-		this.pendingAdoption = [];
-		this.pendingEdges = [];
-
-		if (count > 0) {
-			this._onChanged.fire();
-		}
-		return count;
-	}
-
-	/**
 	 * Restore persisted sessions with fresh, clean terminals.
 	 */
 	adoptRestoredTerminals(): number {
@@ -653,20 +816,15 @@ export class SessionManager {
 		for (const match of persisted) {
 			const color = match.color;
 			const themeColorId = COLOR_TO_THEME[color] || 'charts.orange';
-			const env: Record<string, string | null> = { CLAUDECODE: null };
 
 			const terminal = vscode.window.createTerminal({
 				name: match.name,
 				cwd: workspaceFolder?.uri,
 				iconPath: new vscode.ThemeIcon('robot', new vscode.ThemeColor(themeColorId)),
-				env,
+				env: { ...AGENT_TERMINAL_ENV },
 			});
 
-			if (match.systemPrompt) {
-				terminal.sendText(`claude --append-system-prompt ${escapeShellArg(match.systemPrompt)}`);
-			} else {
-				terminal.sendText('claude');
-			}
+			terminal.sendText(this.agentCommand(match.systemPrompt || undefined));
 
 			const session: AgentSession = {
 				id: match.id,
@@ -678,6 +836,8 @@ export class SessionManager {
 				systemPrompt: match.systemPrompt,
 				humanInLoop: match.humanInLoop,
 				createdAt: match.createdAt,
+				restartCount: 0,
+				lastRestartAt: 0,
 			};
 			this.sessions.set(session.id, session);
 			adoptedIds.add(session.id);

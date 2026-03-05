@@ -30,12 +30,27 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Mark session as exited when Claude Code exits (no auto-restart)
+	// Auto-restart when Claude Code exits (with backoff to prevent spam)
 	context.subscriptions.push(
 		outputDetector.onExited(async (sessionId) => {
 			const session = sessionManager.getSession(sessionId);
 			if (!session) { return; }
-			sessionManager.setSessionStatus(sessionId, 'exited');
+			if (session.status === 'waiting') { return; }
+
+			outputDetector.clearBuffer(sessionId);
+
+			if (!sessionManager.canAutoRestart(sessionId)) {
+				sessionManager.setSessionStatus(sessionId, 'exited');
+				vscode.window.showWarningMessage(
+					`"${session.name}" exited and hit max auto-restart limit. Use the restart button to manually restart.`
+				);
+				return;
+			}
+
+			sessionManager.restartSession(sessionId);
+			vscode.window.showInformationMessage(
+				`Auto-restarted "${session.name}" (attempt ${session.restartCount}/3)`
+			);
 		})
 	);
 
@@ -82,7 +97,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('autothropic.agents.pauseAll', () => {
 			for (const s of sessionManager.getSessions()) {
-				if (s.status !== 'paused' && s.terminal) {
+				if (s.status !== 'paused') {
 					sessionManager.setSessionStatus(s.id, 'paused');
 					s.terminal.sendText('\x03', false);
 				}
@@ -109,9 +124,9 @@ export function activate(context: vscode.ExtensionContext) {
 				placeHolder: 'Enter a prompt...',
 			});
 			if (!message) { return; }
-			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting' && s.terminal);
+			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting');
 			for (const s of idle) {
-				s.terminal!.sendText(message);
+				s.terminal.sendText(message);
 				sessionManager.setSessionStatus(s.id, 'running');
 			}
 			vscode.window.showInformationMessage(`Broadcasted to ${idle.length} agent(s)`);
@@ -311,9 +326,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('_autothropic.agents.broadcast', (message: string) => {
 			if (!message) { return 0; }
-			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting' && s.terminal);
+			const idle = sessionManager.getSessions().filter(s => s.status === 'waiting');
 			for (const s of idle) {
-				s.terminal!.sendText(message);
+				s.terminal.sendText(message);
 				sessionManager.setSessionStatus(s.id, 'running');
 			}
 			return idle.length;
@@ -323,7 +338,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('_autothropic.agents.focusTerminal', (id: string) => {
 			const session = sessionManager.getSession(id);
-			if (session?.terminal) {
+			if (session) {
 				session.terminal.show();
 			}
 		})
@@ -409,7 +424,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const session = sessionManager.getSession(item?.id);
 			if (session) {
 				outputDetector.clearBuffer(session.id);
-				sessionManager.restartSession(session.id);
+				sessionManager.restartSession(session.id, true);
 			}
 		})
 	);
@@ -417,7 +432,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('_autothropic.agents.restartSession', (id: string) => {
 			outputDetector.clearBuffer(id);
-			sessionManager.restartSession(id);
+			sessionManager.restartSession(id, true);
 		})
 	);
 
@@ -425,30 +440,14 @@ export function activate(context: vscode.ExtensionContext) {
 	// Startup: restore sessions, show tutorial hint
 	// =============================================
 
+	// Initialize Docker in background (detect + build image on first use)
+	sessionManager.initDocker();
+
 	setTimeout(() => {
-		// Kill restored agent terminals from previous session (VS Code restores
-		// terminals with shellPath='claude' which auto-launches claude instances).
-		const BUILD_NAME = '\u26A1 Build';
-		for (const terminal of vscode.window.terminals) {
-			if (terminal.name === BUILD_NAME) { continue; }
-			const creationOpts = (terminal as any).creationOptions;
-			if (creationOpts?.shellPath === 'claude') {
-				terminal.dispose();
-			}
-		}
-
-		// Restore persisted sessions as dormant (shown in sidebar/graph, no terminal).
-		// User can restart them to launch claude.
-		sessionManager.restoreDormantSessions();
-
-		// NOW enable adoption for new terminals created by the user
-		adoptionEnabled = true;
-
-		// Auto-open graph panel
-		vscode.commands.executeCommand('autothropic.graphView.focus').then(undefined, () => {});
+		const adopted = sessionManager.adoptRestoredTerminals();
 
 		// Show tutorial hint for first-time users
-		if (sessionManager.getSessions().length === 0) {
+		if (adopted === 0 && sessionManager.getSessions().length === 0) {
 			const hasSeenTutorial = context.globalState.get<boolean>('hasSeenTutorial');
 			if (!hasSeenTutorial) {
 				vscode.window.showInformationMessage(
@@ -467,41 +466,80 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}, 2500);
 
-	// Register terminal profile — "+" in terminal panel spawns an agent via session manager
+	// Register terminal profile — "+" in terminal panel spawns an agent via session manager.
+	// If Docker is ready, the profile provider creates a shell terminal and the
+	// onDidOpenTerminal handler adopts it into the session manager (which sends the docker command).
+	// If Docker is not ready, use the direct claude shellPath approach.
 	context.subscriptions.push(
 		vscode.window.registerTerminalProfileProvider('autothropic.agentTerminal', {
 			provideTerminalProfile(): vscode.ProviderResult<vscode.TerminalProfile> {
 				const cwd = vscode.workspace.workspaceFolders?.[0]?.uri;
+				if (sessionManager.dockerReady) {
+					// Use default shell so we can send docker run command
+					return new vscode.TerminalProfile({
+						name: `Agent ${sessionManager.nextAgentNumber()}`,
+						cwd,
+						iconPath: new vscode.ThemeIcon('robot'),
+						env: {
+							TERM_PROGRAM: 'xterm-256color',
+							TERM_PROGRAM_VERSION: '',
+							VSCODE_IPC_HOOK_CLI: '',
+							VSCODE_GIT_IPC_HANDLE: '',
+							VSCODE_GIT_ASKPASS_NODE: '',
+							VSCODE_GIT_ASKPASS_EXTRA_ARGS: '',
+							VSCODE_GIT_ASKPASS_MAIN: '',
+							GIT_ASKPASS: '',
+							ELECTRON_RUN_AS_NODE: '',
+						},
+					});
+				}
 				return new vscode.TerminalProfile({
 					name: `Agent ${sessionManager.nextAgentNumber()}`,
 					shellPath: 'claude',
 					shellArgs: [],
 					cwd,
 					iconPath: new vscode.ThemeIcon('robot'),
-					env: { CLAUDECODE: '' },
+					env: {
+						TERM_PROGRAM: 'xterm-256color',
+						TERM_PROGRAM_VERSION: '',
+						VSCODE_IPC_HOOK_CLI: '',
+						VSCODE_GIT_IPC_HANDLE: '',
+						VSCODE_GIT_ASKPASS_NODE: '',
+						VSCODE_GIT_ASKPASS_EXTRA_ARGS: '',
+						VSCODE_GIT_ASKPASS_MAIN: '',
+						GIT_ASKPASS: '',
+						ELECTRON_RUN_AS_NODE: '',
+					},
 				});
 			}
 		})
 	);
 
-	// Adopt terminals created by our profile into the session manager.
-	// Block adoption during startup so restored terminals from previous session
-	// don't get re-adopted (VS Code restores terminals with shellPath='claude'
-	// which auto-runs claude in each one).
-	let adoptionEnabled = false;
+	// Adopt terminals created by our profile into the session manager
 	context.subscriptions.push(
 		vscode.window.onDidOpenTerminal((terminal) => {
-			if (!adoptionEnabled) { return; }
+			if (sessionManager.getSessionByTerminal(terminal)) { return; }
 			const creationOpts = (terminal as any).creationOptions;
-			if (creationOpts?.shellPath === 'claude' && !sessionManager.getSessionByTerminal(terminal)) {
+			// Direct claude profile (non-Docker)
+			if (creationOpts?.shellPath === 'claude') {
 				sessionManager.adoptTerminal(terminal);
+				return;
+			}
+			// Docker profile: name matches "Agent N" pattern but no shellPath
+			if (!creationOpts?.shellPath && /^Agent \d+$/.test(terminal.name) && sessionManager.dockerReady) {
+				sessionManager.adoptTerminal(terminal);
+				// Send docker run command to the shell terminal
+				terminal.sendText(sessionManager.agentCommand());
 			}
 		})
 	);
 
-	// Don't override the default terminal profile — doing so causes every
-	// terminal (including ones Claude Code opens internally) to run claude,
-	// cascading into dozens of windows. Users spawn agents via the sidebar.
+	// Set our agent profile as the default terminal so "+" always spawns agents
+	const termConfig = vscode.workspace.getConfiguration('terminal.integrated');
+	const currentDefault = termConfig.get<string>('defaultProfile.windows');
+	if (currentDefault !== 'Autothropic Agent') {
+		termConfig.update('defaultProfile.windows', 'Autothropic Agent', vscode.ConfigurationTarget.Global).then(undefined, () => {});
+	}
 
 	// Terminal cleanup
 	context.subscriptions.push(

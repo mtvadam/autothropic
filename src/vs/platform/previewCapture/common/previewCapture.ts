@@ -40,4 +40,7 @@ export interface IPreviewCaptureService {
 
 	/** Import Chrome browser cookies into Electron's session so the preview shares login state. */
 	syncChromeCookies(): Promise<{ count: number; error?: string }>;
+
+	/** Capture the webview guest at full page resolution (unaffected by CSS transforms). */
+	captureGuestFullRes(urlPrefix: string): Promise<{ dataUrl: string } | null>;
 }

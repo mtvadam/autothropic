@@ -47,6 +47,13 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Screenshot with pre-captured data URL (from core PreviewEditor full-res capture)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autothropic.preview.screenshot.withData', async (dataUrl: string) => {
+      await takeScreenshotFromData(dataUrl, imageEditor);
+    })
+  );
+
   // Open clip editor command
   context.subscriptions.push(
     vscode.commands.registerCommand('autothropic.preview.openClipEditor', async () => {
@@ -134,13 +141,44 @@ export function activate(context: vscode.ExtensionContext) {
 
 // --- Screenshot → Send to Agent ---
 
+async function takeScreenshotFromData(dataUrl: string, imageEditor: ImageEditor): Promise<void> {
+  try {
+    const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+    const bytes = Buffer.from(base64, 'base64');
+    const tmpDir = path.join(os.tmpdir(), 'autothropic-screenshots');
+    try { await vscode.workspace.fs.createDirectory(vscode.Uri.file(tmpDir)); } catch { /* exists */ }
+    const filePath = path.join(tmpDir, `preview-${Date.now()}.png`);
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(filePath), bytes);
+    await imageEditor.show(filePath);
+  } catch (err) {
+    vscode.window.showErrorMessage(`Screenshot failed: ${err}`);
+  }
+}
+
 async function takeScreenshot(imageEditor: ImageEditor): Promise<void> {
   try {
-    const result = await vscode.commands.executeCommand<{ dataUrl: string } | null>(
-      '_autothropic.capture.screenshot'
-    );
-    if (result?.dataUrl) {
-      const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+    let dataUrl: string | undefined;
+
+    // Try main-process guest capture first (full resolution, unaffected by CSS scale)
+    if (previewUrl) {
+      try {
+        const fullRes = await vscode.commands.executeCommand<{ dataUrl: string } | null>(
+          '_autothropic.capture.guestFullRes', previewUrl
+        );
+        if (fullRes?.dataUrl) { dataUrl = fullRes.dataUrl; }
+      } catch { /* not available, fall through */ }
+    }
+
+    // Fallback: renderer-side capture
+    if (!dataUrl) {
+      const result = await vscode.commands.executeCommand<{ dataUrl: string } | null>(
+        '_autothropic.capture.screenshot'
+      );
+      if (result?.dataUrl) { dataUrl = result.dataUrl; }
+    }
+
+    if (dataUrl) {
+      const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const bytes = Buffer.from(base64, 'base64');
       const tmpDir = path.join(os.tmpdir(), 'autothropic-screenshots');
       try { await vscode.workspace.fs.createDirectory(vscode.Uri.file(tmpDir)); } catch { /* exists */ }

@@ -10,6 +10,7 @@ import { IPreviewService, ClipThumbnailData } from './preview.js';
 import { PreviewEditorInput } from './previewEditorInput.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { InstantiationType, registerSingleton } from '../../../../../platform/instantiation/common/extensions.js';
 
 const STORAGE_KEY_URL = 'autothropic.preview.url';
@@ -44,6 +45,7 @@ export class PreviewService extends Disposable implements IPreviewService {
 	constructor(
 		@IEditorService private readonly editorService: IEditorService,
 		@IStorageService private readonly storageService: IStorageService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		this._url = this.storageService.get(STORAGE_KEY_URL, StorageScope.WORKSPACE) ?? null;
@@ -85,6 +87,20 @@ export class PreviewService extends Disposable implements IPreviewService {
 	}
 
 	async captureScreenshot(): Promise<string | null> {
+		// Use main-process guest capture for full resolution (unaffected by CSS scale)
+		if (this._url) {
+			try {
+				const result = await this._commandService.executeCommand<{ dataUrl: string } | null>(
+					'_autothropic.capture.guestFullRes', this._url
+				);
+				if (result?.dataUrl) {
+					console.log('[preview] screenshot via main-process guest capture');
+					return result.dataUrl;
+				}
+			} catch { /* fall through to renderer capture */ }
+		}
+
+		// Fallback: renderer-side capture
 		if (!this._webviewElement || !(this._webviewElement as any).isConnected) {
 			return null;
 		}
@@ -134,13 +150,23 @@ export class PreviewService extends Disposable implements IPreviewService {
 		console.log('[preview] clip buffer paused (frames preserved)');
 	}
 
-	getClipThumbnails(seconds: number): ClipThumbnailData[] {
+	async getClipThumbnails(seconds: number): Promise<ClipThumbnailData[]> {
 		// Auto-start or resume clip buffer if not actively capturing
 		if (!this._clipActive || !this._clipTimer) {
 			this.startClipBuffer();
 		}
 		const cutoff = Date.now() - seconds * 1000;
 		this._clipSnapshot = this._clipFrames.filter(f => f.timestamp >= cutoff);
+
+		// If buffer is empty, try to capture a single frame on-demand
+		if (this._clipSnapshot.length === 0 && this._webviewElement) {
+			console.log('[preview] clip buffer empty, attempting on-demand capture');
+			await this._captureClipFrameForced();
+			this._clipSnapshot = this._clipFrames.filter(f => f.timestamp >= cutoff);
+		}
+
+		console.log(`[preview] getClipThumbnails: ${this._clipSnapshot.length} frames (buffer: ${this._clipFrames.length}, active: ${this._clipActive}, timer: ${!!this._clipTimer}, webview: ${!!this._webviewElement}, connected: ${!!(this._webviewElement as any)?.isConnected})`);
+
 		return this._clipSnapshot.map((f, i) => ({
 			index: i,
 			timestamp: f.timestamp,
@@ -168,10 +194,29 @@ export class PreviewService extends Disposable implements IPreviewService {
 	}
 
 	grabSelectedDataUrls(indices: number[]): string[] {
-		// Return the preview data URLs for selected frames
-		// These are already PNG data URLs from capturePage → resize → toDataURL
 		const valid = indices.filter(i => i >= 0 && i < this._clipSnapshot.length);
 		return valid.map(i => this._clipSnapshot[i].previewDataUrl);
+	}
+
+	/**
+	 * Capture a single full-resolution frame right now.
+	 * Uses main-process guest capture for full quality.
+	 */
+	async captureFullResFrame(): Promise<string | null> {
+		if (this._url) {
+			try {
+				const result = await this._commandService.executeCommand<{ dataUrl: string } | null>(
+					'_autothropic.capture.guestFullRes', this._url
+				);
+				if (result?.dataUrl) { return result.dataUrl; }
+			} catch { /* fall through */ }
+		}
+		// Fallback: renderer-side
+		if (!this._webviewElement) { return null; }
+		try {
+			const img = await this._webviewElement.capturePage();
+			return img && !img.isEmpty() ? img.toDataURL() : null;
+		} catch { return null; }
 	}
 
 	getClipStatus(): { active: boolean; frameCount: number } {
@@ -181,6 +226,39 @@ export class PreviewService extends Disposable implements IPreviewService {
 	// -----------------------------------------------------------------------
 	// Private: Clip Frame Capture (safe -- only uses toDataURL and resize)
 	// -----------------------------------------------------------------------
+
+	/**
+	 * Force-capture a single frame, bypassing the isConnected check.
+	 * Used when the clip editor opens with an empty buffer.
+	 */
+	private async _captureClipFrameForced(): Promise<void> {
+		if (!this._webviewElement) { return; }
+		try {
+			const image = await this._webviewElement.capturePage();
+			if (!image || image.isEmpty()) {
+				console.log('[preview] forced capture returned empty');
+				return;
+			}
+			let previewDataUrl: string;
+			let stripDataUrl: string;
+			try {
+				const size = image.getSize();
+				previewDataUrl = size.width <= 960 ? image.toDataURL() : image.resize({ width: 960 }).toDataURL();
+			} catch {
+				try { previewDataUrl = image.toDataURL(); } catch { previewDataUrl = ''; }
+			}
+			try {
+				stripDataUrl = image.resize({ width: 120 }).toDataURL();
+			} catch {
+				stripDataUrl = previewDataUrl;
+			}
+			if (!previewDataUrl) { return; }
+			this._clipFrames.push({ previewDataUrl, stripDataUrl, timestamp: Date.now() });
+			console.log('[preview] forced capture succeeded');
+		} catch (err) {
+			console.warn('[preview] forced capture failed:', err);
+		}
+	}
 
 	private async _captureClipFrame(): Promise<void> {
 		if (!this._clipActive || this._clipCapturing) { return; }

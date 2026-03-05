@@ -86,3 +86,8 @@ CommandsRegistry.registerCommand('_autothropic.capture.getClipStatus.mainProcess
 		throw err;
 	}
 });
+
+CommandsRegistry.registerCommand('_autothropic.capture.guestFullRes', async (accessor, urlPrefix: string) => {
+	const captureService = accessor.get(IPreviewCaptureService);
+	return await captureService.captureGuestFullRes(urlPrefix);
+});

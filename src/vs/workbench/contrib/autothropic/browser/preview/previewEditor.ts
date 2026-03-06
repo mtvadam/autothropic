@@ -45,6 +45,14 @@ export class PreviewEditor extends EditorPane {
 	private debugOverlay: HTMLElement | null = null;
 	private debugLogs: { level: string; text: string; time: string; src: string }[] = [];
 
+	private addDebugLog(level: string, msg: string): void {
+		const now = new Date();
+		const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
+		this.debugLogs.push({ level, text: msg, time, src: 'preview' });
+		if (this.debugLogs.length > 300) { this.debugLogs.shift(); }
+		this.renderDebugLogs();
+	}
+
 	private config: PreviewConfig;
 	private pageBackgroundColor = '';
 	private detectedBottomNav = false;
@@ -123,6 +131,8 @@ export class PreviewEditor extends EditorPane {
 		// channel, so preventDefault + stopPropagation on the host DOM event
 		// does NOT affect the webview's internal scrolling.
 		this.container.addEventListener('wheel', (e) => {
+			// Allow scrolling inside dropdown menus
+			if ((e.target as HTMLElement).closest?.('.dropdown-menu')) { return; }
 			e.preventDefault();
 			e.stopPropagation();
 		}, { passive: false, capture: true });
@@ -193,11 +203,63 @@ export class PreviewEditor extends EditorPane {
 		webview.style.border = 'none';
 		webview.style.background = 'transparent';
 
+		// Once the webview's webContents is available, set up:
+		// 1. CSP/X-Frame-Options stripping on ALL responses (enables Stripe checkout etc.)
+		// 2. User-Agent spoofing to match the previewed device
+		// 3. Request header overrides for device-appropriate headers
+		webview.addEventListener('did-attach', () => {
+			try {
+				const wc = (webview as any).getWebContents?.();
+				if (!wc?.session) { return; }
+
+				// Set UA to match the current preview device
+				const device = getDevice(this.config.deviceId);
+				wc.setUserAgent(device.userAgent);
+
+				// Strip CSP from all responses so third-party pages work in preview
+				wc.session.webRequest.onHeadersReceived((details: any, callback: any) => {
+					const headers = { ...details.responseHeaders };
+					for (const key of Object.keys(headers)) {
+						const lower = key.toLowerCase();
+						if (lower === 'content-security-policy' ||
+							lower === 'content-security-policy-report-only' ||
+							lower === 'x-frame-options') {
+							delete headers[key];
+						}
+					}
+					callback({ responseHeaders: headers });
+				});
+
+				// Spoof device-appropriate request headers
+				wc.session.webRequest.onBeforeSendHeaders((details: any, callback: any) => {
+					const dev = getDevice(this.config.deviceId);
+					const headers = { ...details.requestHeaders };
+					headers['User-Agent'] = dev.userAgent;
+					// Mobile devices send sec-ch-ua-mobile and platform hints
+					if (dev.category === 'phone') {
+						headers['Sec-CH-UA-Mobile'] = '?1';
+						headers['Sec-CH-UA-Platform'] = dev.userAgent.includes('iPhone') ? '"iOS"' : '"Android"';
+					} else {
+						headers['Sec-CH-UA-Mobile'] = '?0';
+						headers['Sec-CH-UA-Platform'] = dev.userAgent.includes('Macintosh') ? '"macOS"' : '"Windows"';
+					}
+					callback({ requestHeaders: headers });
+				});
+			} catch (e) {
+				console.warn('[preview] Could not set up webview session hooks:', e);
+			}
+		});
+
 		// Inject bridge + scrollbar styles on dom-ready (fires when DOM is ready)
 		// Only inject on real pages (http/https), not about:blank or error pages
 		webview.addEventListener('dom-ready', () => {
 			const url = webview.getURL();
 			if (url && url.startsWith('http')) {
+				// Remove CSP meta tags so third-party pages (Stripe etc.) don't block resources
+				webview.executeJavaScript(`
+					document.querySelectorAll('meta[http-equiv="Content-Security-Policy"]').forEach(m => m.remove());
+					document.querySelectorAll('meta[http-equiv="content-security-policy"]').forEach(m => m.remove());
+				`).catch(() => {});
 				this.injectBridgeScript();
 				this.injectScrollbarCSS();
 				this.updateWebviewMeta();
@@ -223,7 +285,67 @@ export class PreviewEditor extends EditorPane {
 			}
 		});
 
-		// (load failure tracking is in the did-fail-load listener above)
+		// --- Webview health monitoring ---
+		let retryCount = 0;
+		const MAX_RETRIES = 5;
+		webview.addEventListener('did-fail-load', (e: any) => {
+			const code = e.errorCode;
+			const desc = e.errorDescription || 'unknown';
+			const failedUrl = e.validatedURL || '';
+			// -3 = aborted (normal during navigation), ignore
+			if (code === -3) { return; }
+			const msg = `Load failed: ${desc} (code ${code}) - ${failedUrl}`;
+			console.warn('[preview]', msg);
+			this.addDebugLog('error', msg);
+			// Auto-retry on connection refused (dev server not ready yet)
+			if (code === -102 && retryCount < MAX_RETRIES && failedUrl) {
+				retryCount++;
+				const delay = retryCount * 2000; // 2s, 4s, 6s, 8s, 10s
+				this.addDebugLog('warn', `Auto-retrying in ${delay / 1000}s (attempt ${retryCount}/${MAX_RETRIES})...`);
+				setTimeout(() => {
+					if (this.currentDisplayUrl === failedUrl || !this.currentDisplayUrl) {
+						webview.loadURL(failedUrl);
+					}
+				}, delay);
+			}
+		});
+		webview.addEventListener('render-process-gone', (e: any) => {
+			const reason = e.details?.reason || 'unknown';
+			const msg = `Webview renderer crashed: ${reason}`;
+			console.error('[preview]', msg);
+			this.addDebugLog('error', msg);
+			// Auto-reload after crash
+			setTimeout(() => {
+				if (this.currentDisplayUrl) {
+					this.addDebugLog('warn', 'Auto-reloading after crash...');
+					webview.loadURL(this.currentDisplayUrl);
+				}
+			}, 1000);
+		});
+
+		webview.addEventListener('unresponsive', () => {
+			this.addDebugLog('warn', 'Webview became unresponsive');
+		});
+
+		webview.addEventListener('responsive', () => {
+			this.addDebugLog('info', 'Webview recovered from unresponsive state');
+		});
+
+		webview.addEventListener('did-start-loading', () => {
+			this.addDebugLog('info', 'Loading started');
+		});
+
+		webview.addEventListener('did-stop-loading', () => {
+			this.addDebugLog('info', `Loading finished - ${webview.getURL()}`);
+		});
+
+		webview.addEventListener('did-navigate', (e: any) => {
+			const url = e.url || webview.getURL();
+			retryCount = 0; // Reset retry counter on successful navigation
+			this.addDebugLog('info', `Navigated to: ${url}`);
+			this.currentDisplayUrl = url;
+			this.updateHostnameInChrome(url);
+		});
 
 		// Catch F12 / Ctrl+Shift+I when webview has focus
 		webview.addEventListener('before-input-event', (e: any) => {
@@ -234,13 +356,17 @@ export class PreviewEditor extends EditorPane {
 			}
 		});
 
-		// Capture console messages for on-screen debug overlay
+		// Capture console messages from the preview page for debug overlay
 		webview.addEventListener('console-message', (e: any) => {
-			const levelMap: Record<number, string> = { 0: 'debug', 1: 'log', 2: 'warn', 3: 'error' };
+			// Skip bridge protocol messages and debug-level noise
+			const msg = e.message || '';
+			if (msg.startsWith('__ABRIDGE__')) { return; }
+			if (e.level === 0) { return; } // skip verbose/debug level
+			const levelMap: Record<number, string> = { 1: 'log', 2: 'warn', 3: 'error' };
 			const level = levelMap[e.level] || 'log';
 			const now = new Date();
 			const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
-			this.debugLogs.push({ level, text: e.message, time, src: 'webview' });
+			this.debugLogs.push({ level, text: msg, time, src: 'preview' });
 			if (this.debugLogs.length > 300) { this.debugLogs.shift(); }
 			this.renderDebugLogs();
 		});
@@ -346,6 +472,16 @@ export class PreviewEditor extends EditorPane {
 		this.chromeCollapsed = false;
 		this.scrollCooldown = true;
 		setTimeout(() => { this.scrollCooldown = false; }, 500);
+	}
+
+	private updateWebviewUserAgent(device: DeviceProfile): void {
+		if (!this.webviewElement) { return; }
+		try {
+			const wc = (this.webviewElement as any).getWebContents?.();
+			if (wc) {
+				wc.setUserAgent(device.userAgent);
+			}
+		} catch { /* webContents not available yet */ }
 	}
 
 	private injectBridgeScript(): void {
@@ -547,7 +683,45 @@ body { margin-right: -8px !important; }
 	}
 
 	private updateWebviewMeta(): void {
-		// Not needed for Phase 1 -- will be used for favicon/title sync later
+		if (!this.webviewElement) { return; }
+		// Inject safe area insets so website fixed/sticky elements respect phone bezels
+		const c = this.config;
+		if (c.mode !== 'mobile') { return; }
+		const device = getDevice(c.deviceId);
+		if (!device) { return; }
+		const t = device.traits;
+		if (!t) { return; }
+		const top = t.safeAreaTop || 0;
+		const bottom = t.safeAreaBottom || 0;
+		if (top === 0 && bottom === 0) { return; }
+		const left = 0;
+		const right = 0;
+		const css = `
+			:root {
+				--sat: ${top}px; --sar: ${right}px; --sab: ${bottom}px; --sal: ${left}px;
+			}
+			@supports (padding: env(safe-area-inset-top)) {
+				:root {
+					--sat: env(safe-area-inset-top, ${top}px);
+					--sar: env(safe-area-inset-right, ${right}px);
+					--sab: env(safe-area-inset-bottom, ${bottom}px);
+					--sal: env(safe-area-inset-left, ${left}px);
+				}
+			}
+		`;
+		this.webviewElement.insertCSS(css).catch(() => {});
+		// Set viewport meta to enable safe area insets
+		this.webviewElement.executeJavaScript(`
+			(function() {
+				let meta = document.querySelector('meta[name="viewport"]');
+				if (meta) {
+					const content = meta.getAttribute('content') || '';
+					if (!content.includes('viewport-fit=cover')) {
+						meta.setAttribute('content', content + ', viewport-fit=cover');
+					}
+				}
+			})();
+		`).catch(() => {});
 	}
 
 	// ------------------------------------------------------------------
@@ -1259,6 +1433,9 @@ body { margin-right: -8px !important; }
 			if (this.currentDisplayUrl && !existingWebview) {
 				webview.src = this.currentDisplayUrl;
 			}
+
+			// Update User-Agent to match the new device
+			this.updateWebviewUserAgent(device);
 		}
 
 		// Debug overlay
@@ -1292,15 +1469,15 @@ body { margin-right: -8px !important; }
 		const showDock = () => {
 			if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
 			dock.style.opacity = '1';
-			dock.style.transform = 'translateY(0)';
+			dock.style.transform = 'translateY(0) scale(1)';
 			dock.style.pointerEvents = 'auto';
 		};
 		const hideDock = () => {
 			hideTimer = setTimeout(() => {
 				dock.style.opacity = '0';
-				dock.style.transform = 'translateY(60px)';
+				dock.style.transform = 'translateY(20px) scale(0.8)';
 				dock.style.pointerEvents = 'none';
-			}, 300);
+			}, 400);
 		};
 
 		trigger.addEventListener('mouseenter', showDock);
@@ -1354,7 +1531,7 @@ body { margin-right: -8px !important; }
 		header.style.cssText = 'display:flex;align-items:center;padding:4px 10px;background:var(--vscode-sideBar-background, #252525);flex-shrink:0;gap:8px;border-bottom:1px solid var(--vscode-panel-border, #333);user-select:none;';
 		header.innerHTML = (_ttPolicy ? _ttPolicy.createHTML(`
 			<span style="font-weight:600;color:var(--vscode-terminal-ansiRed, #d97757);font-size:11px;">Debug Console</span>
-			<span style="color:var(--vscode-descriptionForeground, #666);font-size:10px;">renderer + webview</span>
+			<span style="color:var(--vscode-descriptionForeground, #666);font-size:10px;">preview console</span>
 		`) : '') as string;
 
 		const copyBtn = document.createElement('button');
@@ -1368,8 +1545,18 @@ body { margin-right: -8px !important; }
 		clearBtn.textContent = 'Clear';
 		clearBtn.style.cssText = 'background:var(--vscode-button-secondaryBackground, #333);border:1px solid var(--vscode-widget-border, #555);color:var(--vscode-button-secondaryForeground, #ccc);font-size:10px;padding:2px 8px;border-radius:3px;cursor:pointer;';
 		clearBtn.addEventListener('click', () => { this.debugLogs = []; this.renderDebugLogs(); });
+		const closeBtn = document.createElement('button');
+		closeBtn.textContent = '\u2715';
+		closeBtn.title = 'Close debug console';
+		closeBtn.style.cssText = 'background:none;border:none;color:var(--vscode-button-secondaryForeground, #ccc);font-size:13px;padding:0 4px;cursor:pointer;margin-left:4px;';
+		closeBtn.addEventListener('click', () => {
+			this.config.showDebugOverlay = false;
+			this._unhookDebugCapture();
+			this.rebuildFrame();
+		});
 		header.appendChild(copyBtn);
 		header.appendChild(clearBtn);
+		header.appendChild(closeBtn);
 		this.debugOverlay.appendChild(header);
 
 		// Log container
@@ -1407,42 +1594,16 @@ body { margin-right: -8px !important; }
 		this.renderDebugLogs();
 	}
 
-	private _origConsoleError: ((...args: any[]) => void) | null = null;
-	private _origConsoleWarn: ((...args: any[]) => void) | null = null;
-	private _origConsoleLog: ((...args: any[]) => void) | null = null;
-	private _errorHandler: ((e: ErrorEvent) => void) | null = null;
-	private _rejectionHandler: ((e: PromiseRejectionEvent) => void) | null = null;
 
 	private _hookDebugCapture(): void {
-		this._unhookDebugCapture();
-		const push = (src: string, level: string, ...args: any[]) => {
-			const now = new Date();
-			const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
-			const text = args.map(a => typeof a === 'string' ? a : JSON.stringify(a, null, 0)?.substring(0, 500) ?? String(a)).join(' ');
-			this.debugLogs.push({ level, text, time, src });
-			if (this.debugLogs.length > 300) { this.debugLogs.shift(); }
-			this.renderDebugLogs();
-		};
-		// Hook console.error/warn/log
-		this._origConsoleError = console.error;
-		this._origConsoleWarn = console.warn;
-		this._origConsoleLog = console.log;
-		console.error = (...args: any[]) => { this._origConsoleError!.apply(console, args); push('renderer', 'error', ...args); };
-		console.warn = (...args: any[]) => { this._origConsoleWarn!.apply(console, args); push('renderer', 'warn', ...args); };
-		console.log = (...args: any[]) => { this._origConsoleLog!.apply(console, args); push('renderer', 'log', ...args); };
-		// Hook uncaught errors
-		this._errorHandler = (e: ErrorEvent) => { push('renderer', 'error', `Uncaught: ${e.message} at ${e.filename}:${e.lineno}`); };
-		this._rejectionHandler = (e: PromiseRejectionEvent) => { push('renderer', 'error', `Unhandled rejection: ${e.reason}`); };
-		mainWindow.addEventListener('error', this._errorHandler);
-		mainWindow.addEventListener('unhandledrejection', this._rejectionHandler);
+		// Webview console messages are already captured via the console-message
+		// event listener on the <webview> element (see setupWebview).
+		// Just re-render to show any existing logs.
+		this.renderDebugLogs();
 	}
 
 	private _unhookDebugCapture(): void {
-		if (this._origConsoleError) { console.error = this._origConsoleError; this._origConsoleError = null; }
-		if (this._origConsoleWarn) { console.warn = this._origConsoleWarn; this._origConsoleWarn = null; }
-		if (this._origConsoleLog) { console.log = this._origConsoleLog; this._origConsoleLog = null; }
-		if (this._errorHandler) { mainWindow.removeEventListener('error', this._errorHandler); this._errorHandler = null; }
-		if (this._rejectionHandler) { mainWindow.removeEventListener('unhandledrejection', this._rejectionHandler); this._rejectionHandler = null; }
+		// No-op: webview console capture is always active via the event listener.
 	}
 
 	private renderDebugLogs(): void {
@@ -1468,7 +1629,7 @@ body { margin-right: -8px !important; }
 			html += `<div style="padding:1px 8px;color:${color};border-bottom:1px solid var(--vscode-widget-border, rgba(255,255,255,0.03));word-break:break-all;line-height:1.4;user-select:text;-webkit-user-select:text;"><span style="color:var(--vscode-descriptionForeground, #555);margin-right:4px;">${entry.time}</span><span style="color:${sc};margin-right:4px;font-size:9px;">[${entry.src}]</span>${prefix}${escaped}</div>`;
 		}
 		if (html === '') {
-			html = '<div style="padding:12px;color:var(--vscode-descriptionForeground, #555);text-align:center;">Listening for console messages...<br>Captures: renderer errors/warnings/logs + webview console output</div>';
+			html = '<div style="padding:12px;color:var(--vscode-descriptionForeground, #555);text-align:center;">Listening for preview console messages...</div>';
 		}
 		if (_ttPolicy) {
 			logContainer.innerHTML = _ttPolicy.createHTML(html) as unknown as string;
@@ -1642,7 +1803,7 @@ body { margin-right: -8px !important; }
 		</div>`;
 		html += `<button id="ap-btn-screenshot" class="action-btn" title="Screenshot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>`;
 		html += `<button id="ap-btn-clip" class="action-btn" title="Clip last 3 seconds"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg></button>`;
-		html += `<button id="ap-btn-restart-build" class="action-btn" title="Restart Build"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-7.5L1 10"/></svg></button>`;
+		html += `<button id="ap-btn-restart-build" class="action-btn" title="Restart Build"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>`;
 		html += '</div>'; // toolbar-row
 
 		return html;
@@ -1831,8 +1992,7 @@ body { margin-right: -8px !important; }
 		// Modern phones
 		const halfFW = Math.floor(frameWidth / 2);
 		const btnSize = Math.floor(frameWidth * 0.9);
-		const btnPad = Math.max(btnSize - halfFW, 0);
-		const btnPos = w + frameWidth + btnSize;
+		const btnPad = btnSize;
 
 		const isNotchMode = os === 'ios' && effectiveType === 'notch';
 		const notchPadHtml = isNotchMode
@@ -1845,13 +2005,17 @@ body { margin-right: -8px !important; }
 		const volDownTop = ratio(315);
 		const powerTop = isIsland ? ratio(280) : ratio(250);
 
-		const buttonsHtml = `
-			<div style="position:absolute;border-radius:${frameWidth}px;top:${silenceTop}px;right:${btnPos}px;width:${btnSize}px;height:${ratio(34)}px;background:#2A2A2C;"></div>
-			<div style="position:absolute;border-radius:${frameWidth}px;top:${volUpTop}px;right:${btnPos}px;width:${btnSize}px;height:${ratio(65)}px;background:#2A2A2C;"></div>
-			<div style="position:absolute;border-radius:${frameWidth}px;top:${volDownTop}px;right:${btnPos}px;width:${btnSize}px;height:${ratio(65)}px;background:#2A2A2C;"></div>
-			<div style="position:absolute;border-radius:${frameWidth}px;top:${powerTop}px;left:${btnPos}px;width:${btnSize}px;height:${ratio(105)}px;background:#2A2A2C;"></div>`;
-
+		// Container layout: [btnPad | frameWidth | screen(w) | frameWidth | btnPad]
+		// Volume/silence on RIGHT side of phone, power on LEFT side (matches original app)
+		// Use `left:` for all buttons, calculated from container left edge
 		const containerW = w + frameWidth * 2 + btnPad * 2;
+		const volLeft = containerW - btnPad - 5;       // right edge, snug against frame
+		const powerLeft = btnPad - btnSize + 5;        // left edge, snug against frame
+		const buttonsHtml = `
+			<div style="position:absolute;border-radius:${frameWidth}px;top:${silenceTop}px;left:${volLeft}px;width:${btnSize}px;height:${ratio(34)}px;background:#2A2A2C;"></div>
+			<div style="position:absolute;border-radius:${frameWidth}px;top:${volUpTop}px;left:${volLeft}px;width:${btnSize}px;height:${ratio(65)}px;background:#2A2A2C;"></div>
+			<div style="position:absolute;border-radius:${frameWidth}px;top:${volDownTop}px;left:${volLeft}px;width:${btnSize}px;height:${ratio(65)}px;background:#2A2A2C;"></div>
+			<div style="position:absolute;border-radius:${frameWidth}px;top:${powerTop}px;left:${powerLeft}px;width:${btnSize}px;height:${ratio(105)}px;background:#2A2A2C;"></div>`;
 		const containerH = h + frameWidth * 2;
 
 		return `<div id="ap-device-frame" class="phone" style="position:relative;width:${containerW}px;height:${containerH}px;padding:0 ${btnPad}px;">

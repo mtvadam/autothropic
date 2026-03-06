@@ -1,26 +1,63 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import type { SessionManager } from './sessionManager';
 import { suppressSession } from './outputDetector';
 
 const SUPPRESS_MS = 5000;
-const ENTER_DELAY_MS = 300;
+const MSG_DIR = path.join(os.tmpdir(), 'autothropic-msg');
+
+// Wipe and recreate message directory on startup — clears stale messages from previous sessions
+try { fs.rmSync(MSG_DIR, { recursive: true, force: true }); } catch {}
+try { fs.mkdirSync(MSG_DIR, { recursive: true }); } catch {}
 
 /**
- * Sends a message to a session terminal via bracket paste + delayed Enter.
- * Bracket paste prevents the terminal from interpreting the message as commands.
+ * Sends a structured message to a session's Claude Code prompt.
+ *
+ * Writes a JSON message file and sends a short nudge via terminal stdin
+ * telling the agent to use the `read_message` MCP tool. This approach is:
+ * - Reliable when IDE is backgrounded (PTY stdin is always open)
+ * - Not rejected as prompt injection (agent expects MCP-based messages)
+ * - Clean structured JSON instead of raw terminal buffer content
  */
-export function sendToSession(sessionManager: SessionManager, targetId: string, message: string): void {
+export function sendToSession(
+  sessionManager: SessionManager,
+  targetId: string,
+  message: string,
+  meta?: { fromName?: string; fromRole?: string },
+): void {
   const session = sessionManager.getSession(targetId);
   if (!session) { return; }
 
   suppressSession(targetId, SUPPRESS_MS);
 
-  const BS = '\x1b[200~';
-  const BE = '\x1b[201~';
-  session.terminal.sendText(BS + message + BE, false);
+  // Write structured JSON message file
+  try {
+    const msgFile = path.join(MSG_DIR, `msg-${targetId.slice(-8)}-${Date.now()}.json`);
+    const payload = {
+      from: meta?.fromName || 'System',
+      fromRole: meta?.fromRole || 'Agent',
+      timestamp: new Date().toISOString(),
+      content: message,
+    };
+    fs.writeFileSync(msgFile, JSON.stringify(payload, null, 2), 'utf-8');
 
-  setTimeout(() => {
-    session.terminal.sendText('', true); // sends Enter
-  }, ENTER_DELAY_MS);
+    // Short atomic nudge — tells agent to use MCP tool to read the message
+    const filePath = msgFile.replace(/\\/g, '/');
+    session.terminal.sendText(
+      `New message from ${payload.from}. Use the read_message tool with file: "${filePath}"`,
+      true,
+    );
+
+    // Clean up after 120s
+    setTimeout(() => {
+      try { fs.unlinkSync(msgFile); } catch {}
+    }, 120_000);
+  } catch {
+    // Fallback: send short message directly
+    const short = message.length > 400 ? message.slice(0, 400) + '...' : message;
+    session.terminal.sendText(short.replace(/\n/g, ' '), true);
+  }
 }
 
 /**
@@ -31,12 +68,12 @@ export function appendToSessionInput(sessionManager: SessionManager, targetId: s
   const session = sessionManager.getSession(targetId);
   if (!session) { return; }
 
-  // Use bracket paste to insert text without triggering shell interpretation,
-  // but don't send Enter — user will do that after adding context.
-  const BS = '\x1b[200~';
-  const BE = '\x1b[201~';
-  session.terminal.sendText(BS + text + BE, false);
-  session.terminal.show();
+  // Show and focus the terminal first so the user sees the text being inserted
+  session.terminal.show(false); // false = take focus
+  // Small delay to let the terminal gain focus before sending text
+  setTimeout(() => {
+    session.terminal.sendText(text, false);
+  }, 150);
 }
 
 export interface QueuedMessage {

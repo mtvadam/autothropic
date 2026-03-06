@@ -48,8 +48,6 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     if (!this.view) { return; }
     try {
       let outputPreviews: Record<string, string[]> = {};
-      let goalState: any = null;
-      let orchestratorState: any = null;
       const [sessions, edges] = await Promise.all([
         vscode.commands.executeCommand<any[]>('_autothropic.agents.getSessions'),
         vscode.commands.executeCommand<any[]>('_autothropic.agents.getEdges'),
@@ -57,19 +55,11 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       try {
         outputPreviews = await vscode.commands.executeCommand<Record<string, string[]>>('_autothropic.agents.getOutputPreview') ?? {};
       } catch { /* command not yet registered */ }
-      try {
-        goalState = await vscode.commands.executeCommand('_autothropic.goal.getState');
-      } catch { /* command not yet registered */ }
-      try {
-        orchestratorState = await vscode.commands.executeCommand('_autothropic.orchestrator.getState');
-      } catch { /* command not yet registered */ }
       this.view.webview.postMessage({
         type: 'update',
         sessions: sessions ?? [],
         edges: edges ?? [],
         outputPreviews: outputPreviews ?? {},
-        goalState: goalState ?? null,
-        orchestratorState: orchestratorState ?? null,
       });
     } catch {
       // Agents extension might not be active yet
@@ -163,38 +153,9 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
           await this.refresh();
         }
         break;
-      case 'startGoal':
-        if (msg.prompt) {
-          await vscode.commands.executeCommand('_autothropic.goal.start', msg.prompt);
-          await this.refresh();
-        }
-        break;
-      case 'mergeAll':
-        await vscode.commands.executeCommand('_autothropic.goal.mergeAll', msg.goalId);
+      case 'setFanoutMode':
+        await vscode.commands.executeCommand('_autothropic.agents.setSessionFanoutMode', msg.id, msg.mode);
         await this.refresh();
-        break;
-      case 'mergeTask':
-        await vscode.commands.executeCommand('_autothropic.goal.mergeTask', msg.taskId);
-        await this.refresh();
-        break;
-      case 'cancelGoal':
-        await vscode.commands.executeCommand('_autothropic.goal.cancel', msg.goalId);
-        await this.refresh();
-        break;
-      case 'focusOrchestrator':
-        await vscode.commands.executeCommand('_autothropic.orchestrator.focusOrchestrator');
-        break;
-      case 'sendInput':
-        if (msg.sessionId && msg.input) {
-          await vscode.commands.executeCommand('_autothropic.orchestrator.sendInput', msg.sessionId, msg.input);
-          await this.refresh();
-        }
-        break;
-      case 'executePlan':
-        if (msg.plan) {
-          await vscode.commands.executeCommand('_autothropic.orchestrator.executePlan', msg.plan);
-          await this.refresh();
-        }
         break;
     }
   }
@@ -224,19 +185,6 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     <span class="broadcast-sep">|</span>
     <input id="broadcast-input" type="text" placeholder="Broadcast to idle agents..." />
     <button id="btn-send-all" title="Send to all idle agents">Send All</button>
-  </div>
-  <div id="goal-bar" class="hidden">
-    <div class="goal-header">
-      <span id="goal-prompt-text"></span>
-      <span id="goal-progress-text"></span>
-    </div>
-    <div class="goal-progress-bar"><div class="goal-progress-fill" id="goal-progress-fill"></div></div>
-    <div class="goal-tasks" id="goal-tasks"></div>
-    <div class="goal-actions" id="goal-actions"></div>
-  </div>
-  <div id="goal-planning" class="hidden">
-    <div class="planning-spinner"></div>
-    <span>Planning tasks...</span>
   </div>
   <div id="graph-container">
     <svg id="edge-layer"></svg>

@@ -430,6 +430,7 @@
 	border-radius: 8px;
 	display: flex;
 	flex-direction: column;
+	position: relative;
 }
 .autothropic-preview-editor .laptop-base {
 	background: #232326;

@@ -645,11 +645,39 @@ class TerminalTabsDragAndDrop extends Disposable implements IListDragAndDrop<ITe
 			}, 500, this._store);
 		}
 
+		// Center drop = join into split group; top/bottom = reorder
+		// Block split-join if the target is the Build terminal (locked)
+		const isCenter = targetSector === ListViewTargetSector.CENTER_TOP || targetSector === ListViewTargetSector.CENTER_BOTTOM;
+		const targetIsLocked = targetInstance && this._isLockedTerminal(targetInstance);
+		const sourceIsLocked = this._getDragSourceInstances(data)?.some(i => this._isLockedTerminal(i));
+
+		let position: ListDragOverEffectPosition;
+		if (isCenter && !targetIsLocked && !sourceIsLocked) {
+			position = ListDragOverEffectPosition.Over;
+		} else if (targetSector === ListViewTargetSector.TOP) {
+			position = ListDragOverEffectPosition.Before;
+		} else {
+			position = ListDragOverEffectPosition.After;
+		}
+
 		return {
-			feedback: targetIndex ? [targetIndex] : undefined,
+			feedback: targetIndex !== undefined ? [targetIndex] : undefined,
 			accept: true,
-			effect: { type: ListDragOverEffectType.Move, position: ListDragOverEffectPosition.Over }
+			effect: { type: ListDragOverEffectType.Move, position }
 		};
+	}
+
+	private _isLockedTerminal(instance: ITerminalInstance): boolean {
+		// The Build terminal uses the lock icon - check icon id
+		const iconId = instance.icon && 'id' in instance.icon ? instance.icon.id : undefined;
+		return iconId === 'lock';
+	}
+
+	private _getDragSourceInstances(data: IDragAndDropData): ITerminalInstance[] | undefined {
+		if (!(data instanceof ElementsDragAndDropData)) { return undefined; }
+		const elements = data.getData();
+		if (!Array.isArray(elements)) { return undefined; }
+		return elements.filter((e: any) => 'instanceId' in e) as ITerminalInstance[];
 	}
 
 	async drop(data: IDragAndDropData, targetInstance: ITerminalInstance | undefined, targetIndex: number | undefined, targetSector: ListViewTargetSector | undefined, originalEvent: DragEvent): Promise<void> {
@@ -721,7 +749,19 @@ class TerminalTabsDragAndDrop extends Disposable implements IListDragAndDrop<ITe
 			return;
 		}
 
-		this._terminalGroupService.moveGroup(sourceInstances, targetInstance);
+		// Center drop = join into split group (side-by-side); edges = reorder
+		// Block split-join involving locked terminals (e.g. Build)
+		const isCenter = targetSector === ListViewTargetSector.CENTER_TOP || targetSector === ListViewTargetSector.CENTER_BOTTOM;
+		const targetIsLocked = this._isLockedTerminal(targetInstance);
+		const sourceHasLocked = sourceInstances.some(i => this._isLockedTerminal(i));
+		if (isCenter && !targetIsLocked && !sourceHasLocked) {
+			// Move each source instance into the target's group (supports any group size)
+			for (const source of sourceInstances) {
+				this._terminalGroupService.moveInstance(source, targetInstance, 'after');
+			}
+		} else {
+			this._terminalGroupService.moveGroup(sourceInstances, targetInstance);
+		}
 		this._terminalService.setActiveInstance(sourceInstances[0]);
 		const targetGroup = this._terminalGroupService.getGroupForInstance(sourceInstances[0]);
 		if (targetGroup) {

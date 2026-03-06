@@ -85,6 +85,9 @@ export class ClipEditor {
         case 'changeDuration':
           await this.loadThumbnails(panel, msg.seconds);
           break;
+        case 'refreshAgents':
+          await this.refreshAgents(panel);
+          break;
         case 'send':
           await this.handleSend(msg.indices, msg.annotations, msg.agentId);
           break;
@@ -95,6 +98,16 @@ export class ClipEditor {
     });
 
     panel.webview.html = this.getHtml(thumbnails, suggested, agents, seconds);
+  }
+
+  private async refreshAgents(panel: vscode.WebviewPanel): Promise<void> {
+    let agents: AgentInfo[] = [];
+    try {
+      agents = await vscode.commands.executeCommand<AgentInfo[]>(
+        '_autothropic.agents.getSessions'
+      ) ?? [];
+    } catch { /* */ }
+    panel.webview.postMessage({ type: 'updateAgents', agents });
   }
 
   private async loadThumbnails(panel: vscode.WebviewPanel, seconds: number): Promise<void> {
@@ -1187,7 +1200,15 @@ export class ClipEditor {
     });
 
     const agentSel = document.getElementById('agent-select');
-    if (agentSel) agentSel.addEventListener('change', updateSendButton);
+    if (agentSel) {
+      agentSel.addEventListener('change', updateSendButton);
+      agentSel.addEventListener('focus', refreshAgentList);
+      agentSel.addEventListener('mousedown', refreshAgentList);
+    }
+    // Also refresh agent list when the webview panel gains visibility
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) { refreshAgentList(); }
+    });
 
     document.getElementById('duration-slider').addEventListener('input', (e) => {
       document.getElementById('duration-label').textContent = e.target.value + 's';
@@ -1230,14 +1251,111 @@ export class ClipEditor {
       }
     });
 
+    // Refresh agent list when dropdown is focused or periodically
+    function refreshAgentList() {
+      vscode.postMessage({ type: 'refreshAgents' });
+    }
+
     // Handle updates from extension
     window.addEventListener('message', (e) => {
       const msg = e.data;
+      if (msg.type === 'updateAgents') {
+        const agentSel = document.getElementById('agent-select');
+        if (!agentSel) {
+          // No select element exists — create one if agents are available
+          if (msg.agents && msg.agents.length > 0) {
+            const actionBar = document.querySelector('.action-bar');
+            const sendBtn = document.getElementById('btn-send');
+            if (actionBar && sendBtn) {
+              const sel = document.createElement('select');
+              sel.className = 'agent-select';
+              sel.id = 'agent-select';
+              for (const a of msg.agents) {
+                const opt = document.createElement('option');
+                opt.value = a.id;
+                opt.dataset.color = a.color;
+                opt.textContent = a.name;
+                sel.appendChild(opt);
+              }
+              actionBar.insertBefore(sel, sendBtn);
+              sel.addEventListener('change', updateSendButton);
+            }
+          }
+        } else {
+          // Update existing select — preserve current selection
+          const currentVal = agentSel.value;
+          agentSel.innerHTML = '';
+          for (const a of (msg.agents || [])) {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            opt.dataset.color = a.color;
+            opt.textContent = a.name;
+            agentSel.appendChild(opt);
+          }
+          // Restore selection if still valid, else pick first
+          if (currentVal && [...agentSel.options].some(o => o.value === currentVal)) {
+            agentSel.value = currentVal;
+          }
+        }
+        updateSendButton();
+        return;
+      }
       if (msg.type === 'updateThumbnails') {
+        const oldThumbnails = thumbnails;
         thumbnails = msg.thumbnails;
-        selected = new Set(msg.suggested);
-        cursor = 0;
-        init();
+
+        // Preserve selections: map old selected indices to new indices by timestamp
+        if (oldThumbnails.length > 0 && selected.size > 0) {
+          const newTimestampMap = new Map();
+          for (let i = 0; i < thumbnails.length; i++) {
+            newTimestampMap.set(thumbnails[i].timestamp, i);
+          }
+          const newSelected = new Set();
+          for (const oldIdx of selected) {
+            if (oldIdx < oldThumbnails.length) {
+              const ts = oldThumbnails[oldIdx].timestamp;
+              const newIdx = newTimestampMap.get(ts);
+              if (newIdx !== undefined) { newSelected.add(newIdx); }
+            }
+          }
+          selected = newSelected;
+
+          // Remap annotations to new indices
+          const newAnnotations = {};
+          for (const [oldIdxStr, anno] of Object.entries(frameAnnotations)) {
+            const oldIdx = parseInt(oldIdxStr);
+            if (oldIdx < oldThumbnails.length) {
+              const ts = oldThumbnails[oldIdx].timestamp;
+              const newIdx = newTimestampMap.get(ts);
+              if (newIdx !== undefined) { newAnnotations[newIdx] = anno; }
+            }
+          }
+          for (const key of Object.keys(frameAnnotations)) { delete frameAnnotations[key]; }
+          Object.assign(frameAnnotations, newAnnotations);
+
+          // Remap cursor
+          if (cursor < oldThumbnails.length) {
+            const curTs = oldThumbnails[cursor].timestamp;
+            const newCursorIdx = newTimestampMap.get(curTs);
+            cursor = newCursorIdx !== undefined ? newCursorIdx : 0;
+          } else {
+            cursor = 0;
+          }
+        } else if (selected.size === 0) {
+          // No prior selection — use suggested
+          selected = new Set(msg.suggested);
+          cursor = 0;
+        }
+
+        // Clamp cursor
+        if (cursor >= thumbnails.length) { cursor = Math.max(0, thumbnails.length - 1); }
+
+        renderFilmstrip();
+        renderSelectionTray();
+        loadFrameImage();
+        updateMainUI();
+        updateSendButton();
+        updateFrameCount();
       }
     });
 

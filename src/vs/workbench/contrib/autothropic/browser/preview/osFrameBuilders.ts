@@ -192,12 +192,12 @@ function buildMacOSDock(): string {
 		</div>`;
 	}
 
-	return `<div class="taskbar macos-dock" style="position:absolute;bottom:0;left:0;right:0;height:70px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;z-index:10;opacity:0;transform:translateY(60px);transition:opacity 0.25s ease,transform 0.25s ease;pointer-events:none;">
+	return `<div class="taskbar macos-dock" style="position:absolute;bottom:12px;left:0;right:0;display:flex;justify-content:center;z-index:10;opacity:0;transform:translateY(20px) scale(0.8);transition:opacity 0.3s ease,transform 0.3s ease;pointer-events:none;">
 	<div style="display:flex;align-items:center;gap:4px;padding:4px 8px;border-radius:16px;background:rgba(50,50,50,0.55);backdrop-filter:blur(20px);border:0.5px solid rgba(255,255,255,0.12);">
 		${icons}
 	</div>
 </div>
-<div class="macos-dock-trigger" style="position:absolute;bottom:0;left:0;right:0;height:10px;z-index:9;"></div>`;
+<div class="macos-dock-trigger" style="position:absolute;bottom:0;left:0;right:0;height:20px;z-index:9;"></div>`;
 }
 
 // ---------------------------------------------------------------------------

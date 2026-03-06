@@ -61,10 +61,12 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Terminal URL auto-detection
+  // Terminal URL auto-detection — only from Build terminal, not agent terminals
   context.subscriptions.push(
     vscode.window.onDidWriteTerminalData((e) => {
       if (previewUrlManual) { return; }
+      // Only pick up URLs from the Build terminal to avoid agents hijacking the preview
+      if (!_buildTerminal || e.terminal !== _buildTerminal) { return; }
       const clean = e.data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
       const match = clean.match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+/);
       if (match && match[0] !== previewUrl) {

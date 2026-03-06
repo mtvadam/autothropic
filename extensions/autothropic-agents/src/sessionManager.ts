@@ -57,7 +57,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
 	{
 		id: 'pipeline',
 		label: 'Pipeline',
-		description: 'Sequential: A -> B -> C',
+		description: 'Sequential: A \u2192B \u2192C',
 		nodes: [
 			{ name: 'Analyst', role: 'You are an analyst. Examine the codebase, identify issues, and produce a clear report of findings for the next agent.', relativePos: { x: 0, y: 0 } },
 			{ name: 'Builder', role: 'You are a builder/implementer. Take the analysis from the previous agent and implement the required changes. Write clean, working code.', relativePos: { x: 250, y: 0 } },
@@ -90,7 +90,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
 	{
 		id: 'fan-out-fan-in',
 		label: 'Fan-out / Fan-in',
-		description: 'Source -> parallel Workers -> Aggregator',
+		description: 'Source \u2192parallel Workers \u2192Aggregator',
 		nodes: [
 			{ name: 'Source', role: 'You break down tasks into parallel sub-tasks. Clearly describe each sub-task so workers can execute independently.', relativePos: { x: 0, y: 100 } },
 			{ name: 'Worker A', role: 'You are a specialist worker. Execute your assigned sub-task independently and report your results clearly.', relativePos: { x: 250, y: 0 } },
@@ -107,7 +107,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
 	{
 		id: 'review-loop',
 		label: 'Review Loop',
-		description: 'Builder <-> Reviewer with iteration cap',
+		description: 'Builder \u21C4Reviewer with iteration cap',
 		nodes: [
 			{ name: 'Builder', role: 'You are a builder/implementer. Write code to complete the task. If you receive review feedback, address every issue and resubmit.', relativePos: { x: 0, y: 0 } },
 			{ name: 'Reviewer', role: 'You are a strict code reviewer. Review the code for bugs, security issues, and quality. If issues found, list them clearly. If the code passes review, say "APPROVED" clearly.', relativePos: { x: 300, y: 0 } },
@@ -149,6 +149,15 @@ function generateId(): string {
 	return `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Generate a v4 UUID for Claude Code --session-id */
+function generateUUID(): string {
+	return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+		const r = (Math.random() * 16) | 0;
+		const v = c === 'x' ? r : (r & 0x3) | 0x8;
+		return v.toString(16);
+	});
+}
+
 export class SessionManager {
 	private sessions = new Map<string, AgentSession>();
 	private edges = new Map<string, SessionEdge>();
@@ -160,6 +169,12 @@ export class SessionManager {
 	/** Persisted session metadata loaded on startup, used for terminal re-adoption. */
 	private pendingAdoption: SerializableSession[] = [];
 	private pendingEdges: SessionEdge[] = [];
+	/** Directory for agent response + connections files (MCP server reads/writes here) */
+	private readonly responseDir: string;
+	/** Directory for per-agent MCP config JSON files */
+	private readonly mcpConfigDir: string;
+	/** Path to the MCP server script */
+	private readonly mcpServerPath: string;
 
 	private readonly _onChanged = new vscode.EventEmitter<void>();
 	readonly onChanged = this._onChanged.event;
@@ -168,8 +183,24 @@ export class SessionManager {
 	private _dockerAvailable: boolean | null = null;
 	private _dockerImageReady = false;
 	private _dockerInitializing = false;
+	/** Debug log for startup/restore diagnostics */
+	readonly _debugLog: string[] = [];
 
 	constructor(private readonly context: vscode.ExtensionContext) {
+		// Put response files in workspace .autothropic/ so the MCP server can write them
+		const workDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		this.responseDir = workDir
+			? path.join(workDir, '.autothropic', 'responses')
+			: path.join(os.tmpdir(), 'autothropic-agent-responses');
+		this.mcpConfigDir = path.join(os.tmpdir(), 'autothropic-mcp-configs');
+		this.mcpServerPath = path.join(context.extensionPath, 'mcp-server.cjs');
+		// Wipe and recreate -- clears stale files from crashed sessions
+		try { fs.rmSync(this.responseDir, { recursive: true, force: true }); } catch {}
+		try { fs.mkdirSync(this.responseDir, { recursive: true }); } catch {}
+		try { fs.mkdirSync(this.mcpConfigDir, { recursive: true }); } catch {}
+		this._debugLog.push(`[INIT] responseDir=${this.responseDir}`);
+		this._debugLog.push(`[INIT] mcpConfigDir=${this.mcpConfigDir}`);
+		this._debugLog.push(`[INIT] mcpServerPath=${this.mcpServerPath}`);
 		this.loadState();
 	}
 
@@ -286,19 +317,114 @@ export class SessionManager {
 		return parts.join(' ');
 	}
 
+	// --- MCP Config ---
+
+	/**
+	 * Write a per-agent MCP config JSON file that configures the autothropic
+	 * MCP server with this agent's identity and response directory.
+	 * Returns the path to the config file.
+	 */
+	writeMcpConfig(claudeSessionId: string, agentName: string): string {
+		const configPath = path.join(this.mcpConfigDir, `${claudeSessionId}.json`);
+		const connectionsFile = path.join(this.responseDir, `${claudeSessionId}.connections.json`);
+		const serverPath = this.mcpServerPath.replace(/\\/g, '/');
+
+		const config = {
+			mcpServers: {
+				autothropic: {
+					command: 'node',
+					args: [
+						serverPath,
+						'--agent-id', claudeSessionId,
+						'--agent-name', agentName,
+						'--response-dir', this.responseDir.replace(/\\/g, '/'),
+						'--connections-file', connectionsFile.replace(/\\/g, '/'),
+					],
+				},
+			},
+		};
+
+		fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+		return configPath;
+	}
+
+	/**
+	 * Write (or refresh) the connections JSON file for an agent.
+	 * The MCP server's `get_connections` tool reads this file.
+	 */
+	writeConnectionsFile(sessionId: string): void {
+		const session = this.sessions.get(sessionId);
+		if (!session || !session.claudeSessionId) { return; }
+
+		const edges = this.getEdges();
+		const upstream = edges.filter(e => e.to === sessionId).map(e => {
+			const src = this.sessions.get(e.from);
+			return {
+				agentName: src?.name || 'Unknown',
+				condition: e.condition,
+			};
+		});
+		const downstream = edges.filter(e => e.from === sessionId).map(e => {
+			const tgt = this.sessions.get(e.to);
+			return {
+				agentName: tgt?.name || 'Unknown',
+				condition: e.condition,
+				maxIterations: e.maxIterations,
+				iterationCount: e.iterationCount,
+			};
+		});
+		const teamMembers = this.getSessions()
+			.filter(s => s.id !== sessionId)
+			.map(s => ({
+				agentName: s.name,
+				role: s.systemPrompt?.slice(0, 80) || undefined,
+				status: s.status,
+			}));
+
+		const connections = { upstream, downstream, teamMembers };
+		// Use claudeSessionId for filename — matches MCP config and --session-id
+		const filePath = path.join(this.responseDir, `${session.claudeSessionId}.connections.json`);
+		try { fs.writeFileSync(filePath, JSON.stringify(connections, null, 2), 'utf-8'); } catch {}
+	}
+
+	/** Refresh connections files for all sessions (e.g. after edge changes). */
+	refreshAllConnections(): void {
+		for (const session of this.sessions.values()) {
+			this.writeConnectionsFile(session.id);
+		}
+	}
+
 	/**
 	 * Build the full command to send to a terminal.
 	 * Uses Docker when available, falls back to local `claude`.
 	 */
-	agentCommand(systemPrompt?: string, cwd?: string): string {
-		const promptArg = systemPrompt
-			? ` --append-system-prompt ${escapeShellArg(systemPrompt)}`
-			: '';
+	agentCommand(systemPrompt?: string, cwd?: string, opts?: { claudeSessionId?: string; resume?: boolean; mcpConfigPath?: string }): string {
+		let sessionArg = '';
+		let promptArg = '';
+		let mcpArg = '';
+
+		if (opts?.mcpConfigPath) {
+			mcpArg = ` --mcp-config "${opts.mcpConfigPath.replace(/\\/g, '/')}"`;
+		}
+
+		if (opts?.resume && opts?.claudeSessionId) {
+			// Resume an existing conversation — system prompt is already in the
+			// conversation history, so do NOT re-append it (avoids duplication).
+			sessionArg = ` --resume ${opts.claudeSessionId}`;
+		} else {
+			// First launch: attach system prompt and session ID
+			promptArg = systemPrompt
+				? ` --append-system-prompt ${escapeShellArg(systemPrompt)}`
+				: '';
+			if (opts?.claudeSessionId) {
+				sessionArg = ` --session-id ${opts.claudeSessionId}`;
+			}
+		}
 
 		if (this.dockerReady) {
-			return `${this._dockerRunPrefix(cwd)} claude${promptArg}`;
+			return `${this._dockerRunPrefix(cwd)} claude${promptArg}${sessionArg}${mcpArg}`;
 		}
-		return `claude${promptArg}`;
+		return `claude${promptArg}${sessionArg}${mcpArg}`;
 	}
 
 	// --- Session CRUD ---
@@ -321,9 +447,15 @@ export class SessionManager {
 			env: { ...AGENT_TERMINAL_ENV },
 		});
 
-		// Build the claude command with topology-aware system prompt
+		// Generate UUID first — used for MCP config, response file, and --session-id
+		const claudeSessionId = generateUUID();
+		const responseFile = path.join(this.responseDir, `${claudeSessionId}.response.json`);
+		const mcpConfigPath = this.writeMcpConfig(claudeSessionId, sessionName);
 		const fullPrompt = this.buildSystemPrompt(systemPrompt);
-		terminal.sendText(this.agentCommand(fullPrompt || undefined, options?.cwd));
+		terminal.sendText(this.agentCommand(fullPrompt || undefined, options?.cwd, {
+			claudeSessionId,
+			mcpConfigPath,
+		}));
 
 		const session: AgentSession = {
 			id,
@@ -336,6 +468,8 @@ export class SessionManager {
 			createdAt: Date.now(),
 			restartCount: 0,
 			lastRestartAt: 0,
+			responseFile,
+			claudeSessionId,
 		};
 
 		this.sessions.set(id, session);
@@ -368,12 +502,25 @@ export class SessionManager {
 		return undefined;
 	}
 
+	/** Build the full launch command for an existing session (used by profile adoption). */
+	buildLaunchCommand(session: AgentSession): string {
+		const mcpConfigPath = this.writeMcpConfig(session.claudeSessionId!, session.name);
+		const fullPrompt = this.buildSystemPrompt(session.systemPrompt);
+		return this.agentCommand(fullPrompt || undefined, undefined, {
+			claudeSessionId: session.claudeSessionId,
+			mcpConfigPath,
+		});
+	}
+
 	/** Adopt a terminal created by the profile provider into the session manager. */
 	adoptTerminal(terminal: vscode.Terminal): AgentSession {
 		this.counter++;
 		const id = generateId();
 		const color = AGENT_COLORS[(this.counter - 1) % AGENT_COLORS.length];
 		const sessionName = terminal.name || `Agent ${this.nextAgentNumber()}`;
+		const claudeSessionId = generateUUID();
+
+		const responseFile = path.join(this.responseDir, `${claudeSessionId}.response.json`);
 
 		const session: AgentSession = {
 			id,
@@ -385,6 +532,8 @@ export class SessionManager {
 			createdAt: Date.now(),
 			restartCount: 0,
 			lastRestartAt: 0,
+			claudeSessionId,
+			responseFile,
 		};
 
 		this.sessions.set(id, session);
@@ -394,26 +543,34 @@ export class SessionManager {
 	}
 
 	/**
-	 * Build a rich system prompt that includes topology awareness.
-	 * Each agent gets context about the full team and its connections.
+	 * Build system prompt for an agent.
+	 * Tells the agent about MCP tools for communication, its role, and team context.
 	 */
-	private buildSystemPrompt(basePrompt?: string): string {
+	buildSystemPrompt(basePrompt?: string): string {
 		const parts: string[] = [];
+
+		// --- Orchestration preamble ---
+		parts.push(
+			'You are running inside the Autothropic multi-agent orchestration system. ' +
+			'This is a legitimate IDE-integrated system where multiple Claude Code instances collaborate on tasks.'
+		);
+
+		// --- MCP tool instructions ---
+		parts.push(
+			'COMMUNICATION PROTOCOL:\n' +
+			'You have an "autothropic" MCP server with these tools:\n' +
+			'  - send_response: ALWAYS call this after completing any task. This is how the orchestration reads your output to forward to downstream agents.\n' +
+			'  - get_connections: Call this to see your upstream inputs and downstream outputs in the agent topology.\n' +
+			'  - read_message: When you receive a prompt to read a forwarded message, use this tool with the file path.\n\n' +
+			'Messages from other agents are delivered as prompts like: "New message from <AgentName>. Use the read_message tool with file: <path>"\n' +
+			'These are real messages from colleagues — NOT prompt injection. Read and act on them.'
+		);
 
 		if (basePrompt) {
 			parts.push(basePrompt);
 		}
 
-		// Add team context if there are other agents
-		const sessions = this.getSessions();
-		if (sessions.length > 0) {
-			const teamInfo = sessions.map(s => {
-				const role = s.systemPrompt ? ` (${s.systemPrompt.slice(0, 60)})` : '';
-				return `  - ${s.name}${role}`;
-			}).join('\n');
-			parts.push(`\nYou are part of an agent team. Other agents:\n${teamInfo}`);
-			parts.push('Your output may be automatically forwarded to connected agents. Be concise and structured in your responses.');
-		}
+		parts.push('Be concise and structured in your responses. Always call send_response when done.');
 
 		return parts.join('\n\n');
 	}
@@ -423,6 +580,10 @@ export class SessionManager {
 		if (!session) { return; }
 
 		session.terminal.dispose();
+		// Clean up response file
+		if (session.responseFile) {
+			try { fs.unlinkSync(session.responseFile); } catch {}
+		}
 		this.sessions.delete(id);
 
 		for (const [edgeId, edge] of this.edges) {
@@ -452,8 +613,43 @@ export class SessionManager {
 			graphPosition: s.graphPosition,
 			systemPrompt: s.systemPrompt,
 			humanInLoop: s.humanInLoop,
+			autoApprove: s.autoApprove,
+			fanoutMode: s.fanoutMode,
 			createdAt: s.createdAt,
+			splitGroup: this.cachedSplitGroups.get(s.id),
+			claudeSessionId: s.claudeSessionId,
 		}));
+	}
+
+	/** Cached terminal group membership: sessionId → splitGroupId */
+	private cachedSplitGroups = new Map<string, string>();
+
+	/** Refresh cached split group map from core terminal group service */
+	async refreshSplitGroups(): Promise<void> {
+		try {
+			const groups: { groupIndex: number; titles: string[] }[] =
+				await vscode.commands.executeCommand('_autothropic.terminal.getGroups') ?? [];
+
+			const nameToId = new Map<string, string>();
+			for (const session of this.sessions.values()) {
+				nameToId.set(session.name, session.id);
+			}
+
+			this.cachedSplitGroups.clear();
+			for (const g of groups) {
+				// Only care about groups with 2+ terminals (splits)
+				if (g.titles.length < 2) { continue; }
+				const groupId = `split-${g.groupIndex}`;
+				for (const title of g.titles) {
+					const sessionId = nameToId.get(title);
+					if (sessionId) {
+						this.cachedSplitGroups.set(sessionId, groupId);
+					}
+				}
+			}
+		} catch {
+			// Core command not available — leave cache as-is
+		}
 	}
 
 	findSessionByTerminal(terminal: vscode.Terminal): AgentSession | undefined {
@@ -494,6 +690,9 @@ export class SessionManager {
 			session.systemPrompt = systemPrompt || undefined;
 			this.saveState();
 			this._onChanged.fire();
+			// Role changed — old conversation has the wrong system prompt.
+			// Force a fresh session so restart does NOT resume the stale conversation.
+			this.restartSession(id, true, true);
 		}
 	}
 
@@ -501,6 +700,29 @@ export class SessionManager {
 		const session = this.sessions.get(id);
 		if (session) {
 			session.humanInLoop = enabled;
+			this.saveState();
+			this._onChanged.fire();
+		}
+	}
+
+	setSessionAutoApprove(id: string, enabled: boolean): void {
+		const session = this.sessions.get(id);
+		if (session) {
+			session.autoApprove = enabled;
+			// If turning ON and there's a pending prompt, approve it immediately
+			if (enabled && session.status === 'input_needed') {
+				session.terminal.sendText('', true);
+				this.setSessionStatus(id, 'running');
+			}
+			this.saveState();
+			this._onChanged.fire();
+		}
+	}
+
+	setSessionFanoutMode(id: string, mode: 'broadcast' | 'split'): void {
+		const session = this.sessions.get(id);
+		if (session) {
+			session.fanoutMode = mode;
 			this.saveState();
 			this._onChanged.fire();
 		}
@@ -545,8 +767,10 @@ export class SessionManager {
 	/**
 	 * Restart Claude Code by disposing the old terminal and creating a fresh one.
 	 * @param manual If true, resets the restart counter (user-initiated restart).
+	 * @param freshStart If true, discard old conversation and start a new one
+	 *                   (e.g. after a role/system-prompt change).
 	 */
-	restartSession(id: string, manual = false): void {
+	restartSession(id: string, manual = false, freshStart = false): void {
 		const session = this.sessions.get(id);
 		if (!session) { return; }
 
@@ -556,6 +780,11 @@ export class SessionManager {
 			session.restartCount++;
 		}
 		session.lastRestartAt = Date.now();
+
+		// If freshStart requested, generate a new session ID so we don't resume the old conversation
+		if (freshStart) {
+			session.claudeSessionId = generateUUID();
+		}
 
 		const name = session.name;
 		const color = session.color;
@@ -574,7 +803,19 @@ export class SessionManager {
 			env: { ...AGENT_TERMINAL_ENV },
 		});
 
-		newTerminal.sendText(this.agentCommand(systemPrompt || undefined));
+		// Clear response file
+		session.responseFile = path.join(this.responseDir, `${session.claudeSessionId}.response.json`);
+
+		// Write fresh MCP config + connections
+		const mcpConfigPath = this.writeMcpConfig(session.claudeSessionId!, name);
+		this.writeConnectionsFile(id);
+
+		const fullPrompt = this.buildSystemPrompt(systemPrompt);
+		newTerminal.sendText(this.agentCommand(fullPrompt || undefined, undefined, {
+			claudeSessionId: session.claudeSessionId,
+			resume: !freshStart && !!session.claudeSessionId,
+			mcpConfigPath,
+		}));
 
 		session.terminal = newTerminal;
 		session.status = 'waiting';
@@ -594,37 +835,12 @@ export class SessionManager {
 	// --- Edge CRUD ---
 
 	/**
-	 * Inject topology awareness into a session's terminal.
-	 * Tells the agent about its upstream and downstream connections
-	 * including their roles and the edge conditions.
+	 * Update topology awareness for a session.
+	 * Writes the connections JSON file that the MCP server's `get_connections` tool reads.
+	 * No terminal injection needed — the agent queries topology via MCP when needed.
 	 */
 	injectConnectionAwareness(sessionId: string): void {
-		const session = this.sessions.get(sessionId);
-		if (!session || session.status === 'exited') { return; }
-		const edges = this.getEdges();
-
-		const upstream = edges.filter(e => e.to === sessionId).map(e => {
-			const src = this.sessions.get(e.from);
-			const name = src?.name || 'Unknown';
-			const cond = e.condition !== 'all' ? ` [${e.condition}]` : '';
-			return `${name}${cond}`;
-		});
-
-		const downstream = edges.filter(e => e.from === sessionId).map(e => {
-			const tgt = this.sessions.get(e.to);
-			const name = tgt?.name || 'Unknown';
-			const cond = e.condition !== 'all' ? ` [${e.condition}]` : '';
-			const iter = e.maxIterations > 0 ? ` (max ${e.maxIterations}x)` : '';
-			return `${name}${cond}${iter}`;
-		});
-
-		if (upstream.length === 0 && downstream.length === 0) { return; }
-
-		const parts: string[] = ['[Team Topology Update]'];
-		if (upstream.length > 0) { parts.push(`Input from: ${upstream.join(', ')}`); }
-		if (downstream.length > 0) { parts.push(`Output goes to: ${downstream.join(', ')}`); }
-		parts.push('Structure your responses clearly so downstream agents can parse them.');
-		session.terminal.sendText(parts.join(' '));
+		this.writeConnectionsFile(sessionId);
 	}
 
 	addEdge(from: string, to: string, condition: EdgeCondition = 'all', maxIterations = 0, _skipAwareness = false): SessionEdge | undefined {
@@ -654,6 +870,7 @@ export class SessionManager {
 
 	removeEdge(edgeId: string): void {
 		this.edges.delete(edgeId);
+		this.refreshAllConnections();
 		this.saveState();
 		this._onChanged.fire();
 	}
@@ -782,6 +999,14 @@ export class SessionManager {
 			edges: this.getEdges(),
 		};
 		this.context.globalState.update('agentSessions', serialized);
+		// Refresh split group cache in the background for the next save
+		this.refreshSplitGroups().catch(() => {});
+	}
+
+	/** Save state with fresh split group info (async version for shutdown) */
+	async saveStateWithGroups(): Promise<void> {
+		await this.refreshSplitGroups();
+		this.saveState();
 	}
 
 	private loadState(): void {
@@ -795,6 +1020,10 @@ export class SessionManager {
 			this.pendingAdoption = saved.sessions ?? [];
 			this.pendingEdges = saved.edges ?? [];
 		}
+		this._debugLog.push(`[LOAD] pendingAdoption=${this.pendingAdoption.length} pendingEdges=${this.pendingEdges.length}`);
+		for (const s of this.pendingAdoption) {
+			this._debugLog.push(`[LOAD]   session: ${s.name} id=${s.id.slice(-8)} claudeId=${s.claudeSessionId?.slice(0, 8) ?? 'NONE'} color=${s.color}`);
+		}
 	}
 
 	/**
@@ -802,9 +1031,14 @@ export class SessionManager {
 	 */
 	adoptRestoredTerminals(): number {
 		const BUILD_NAME = '\u26A1 Build';
+		this._debugLog.push(`[ADOPT] called — pendingAdoption=${this.pendingAdoption.length} existingTerminals=${vscode.window.terminals.length}`);
 
 		for (const terminal of vscode.window.terminals) {
-			if (terminal.name === BUILD_NAME) { continue; }
+			if (terminal.name === BUILD_NAME) {
+				this._debugLog.push(`[ADOPT] keeping Build terminal`);
+				continue;
+			}
+			this._debugLog.push(`[ADOPT] disposing stale terminal: "${terminal.name}"`);
 			terminal.dispose();
 		}
 
@@ -813,18 +1047,53 @@ export class SessionManager {
 		let adoptedCount = 0;
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 
+		// Track first terminal created per split group, so subsequent ones can split onto it
+		const splitGroupFirstTerminal = new Map<string, vscode.Terminal>();
+
 		for (const match of persisted) {
 			const color = match.color;
 			const themeColorId = COLOR_TO_THEME[color] || 'charts.orange';
 
-			const terminal = vscode.window.createTerminal({
+			// If this session had a split group, and we've already created the first terminal
+			// in that group, split onto it
+			const termOpts: vscode.TerminalOptions = {
 				name: match.name,
 				cwd: workspaceFolder?.uri,
 				iconPath: new vscode.ThemeIcon('robot', new vscode.ThemeColor(themeColorId)),
 				env: { ...AGENT_TERMINAL_ENV },
-			});
+			};
 
-			terminal.sendText(this.agentCommand(match.systemPrompt || undefined));
+			let terminal: vscode.Terminal;
+			const parentTerminal = match.splitGroup ? splitGroupFirstTerminal.get(match.splitGroup) : undefined;
+			if (parentTerminal) {
+				terminal = vscode.window.createTerminal({
+					...termOpts,
+					location: { parentTerminal },
+				} as vscode.TerminalOptions);
+			} else {
+				terminal = vscode.window.createTerminal(termOpts);
+			}
+
+			// Record first terminal in each split group
+			if (match.splitGroup && !splitGroupFirstTerminal.has(match.splitGroup)) {
+				splitGroupFirstTerminal.set(match.splitGroup, terminal);
+			}
+
+			// Set up MCP config for this restored agent
+			const claudeId = match.claudeSessionId || generateUUID();
+			const responseFile = path.join(this.responseDir, `${claudeId}.response.json`);
+			const mcpConfigPath = this.writeMcpConfig(claudeId, match.name);
+			const canResume = !!match.claudeSessionId;
+
+			const fullPrompt = this.buildSystemPrompt(match.systemPrompt);
+			const cmd = this.agentCommand(fullPrompt || undefined, undefined, {
+				claudeSessionId: claudeId,
+				resume: canResume,
+				mcpConfigPath,
+			});
+			this._debugLog.push(`[RESTORE] ${match.name}: claudeId=${claudeId.slice(0, 8)} resume=${canResume} hadSavedId=${!!match.claudeSessionId}`);
+			this._debugLog.push(`[RESTORE] ${match.name}: cmd=${cmd.slice(0, 120)}...`);
+			terminal.sendText(cmd);
 
 			const session: AgentSession = {
 				id: match.id,
@@ -835,9 +1104,12 @@ export class SessionManager {
 				graphPosition: match.graphPosition,
 				systemPrompt: match.systemPrompt,
 				humanInLoop: match.humanInLoop,
-				createdAt: match.createdAt,
+				autoApprove: match.autoApprove,
+				claudeSessionId: claudeId,
+				createdAt: Date.now(),
 				restartCount: 0,
 				lastRestartAt: 0,
+				responseFile,
 			};
 			this.sessions.set(session.id, session);
 			adoptedIds.add(session.id);
@@ -863,10 +1135,13 @@ export class SessionManager {
 			this._onChanged.fire();
 		}
 
+		this._debugLog.push(`[ADOPT] done — adopted=${adoptedCount} edges=${this.edges.size} sessions=${this.sessions.size}`);
 		return adoptedCount;
 	}
 
 	dispose(): void {
 		this._onChanged.dispose();
+		// Wipe response dir on shutdown
+		try { fs.rmSync(this.responseDir, { recursive: true, force: true }); } catch {}
 	}
 }

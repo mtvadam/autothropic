@@ -79,6 +79,10 @@
         "title": "Toggle HITL"
       },
       {
+        "command": "autothropic.agents.toggleAutoApprove",
+        "title": "Toggle Auto-Approve"
+      },
+      {
         "command": "autothropic.agents.restart",
         "title": "Restart Agent",
         "icon": "$(debug-restart)"
@@ -87,6 +91,15 @@
         "command": "autothropic.agents.delete",
         "title": "Delete Agent",
         "icon": "$(trash)"
+      },
+      {
+        "command": "autothropic.agents.debugOrchestration",
+        "title": "Autothropic: Debug Orchestration (Dump State)"
+      },
+      {
+        "command": "autothropic.agents.showOrchestrationLog",
+        "title": "Autothropic: Show Orchestration Log",
+        "icon": "$(bug)"
       }
     ],
     "menus": {
@@ -105,11 +118,22 @@
         },
         {
           "command": "autothropic.agents.tutorial"
+        },
+        {
+          "command": "autothropic.agents.debugOrchestration"
+        },
+        {
+          "command": "autothropic.agents.showOrchestrationLog"
         }
       ],
       "view/title": [
         {
           "command": "autothropic.agents.spawn",
+          "when": "view == autothropic.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "autothropic.agents.showOrchestrationLog",
           "when": "view == autothropic.sessions",
           "group": "navigation"
         }
@@ -134,6 +158,10 @@
         },
         {
           "command": "autothropic.agents.toggleHITL",
+          "when": "view == autothropic.sessions"
+        },
+        {
+          "command": "autothropic.agents.toggleAutoApprove",
           "when": "view == autothropic.sessions"
         },
         {

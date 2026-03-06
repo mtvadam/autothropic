@@ -19,6 +19,7 @@ import { PreviewEditorInput } from './preview/previewEditorInput.js';
 import { PREVIEW_EDITOR_ID, IPreviewService } from './preview/preview.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { ITerminalGroupService } from '../../terminal/browser/terminal.js';
 
 // Import to trigger service registration side effect
 import './preview/previewService.js';
@@ -218,4 +219,21 @@ CommandsRegistry.registerCommand('_autothropic.capture.getClipStatus', (accessor
 CommandsRegistry.registerCommand('_autothropic.capture.fullResFrame', async (accessor) => {
 	const previewService = accessor.get(IPreviewService);
 	return await previewService.captureFullResFrame();
+});
+
+// ---------------------------------------------------------------------------
+// Terminal group query (for persisting split groups across restarts)
+// ---------------------------------------------------------------------------
+
+CommandsRegistry.registerCommand('_autothropic.terminal.getGroups', (accessor) => {
+	const groupService = accessor.get(ITerminalGroupService);
+	const result: { groupIndex: number; titles: string[] }[] = [];
+	for (let i = 0; i < groupService.groups.length; i++) {
+		const group = groupService.groups[i];
+		result.push({
+			groupIndex: i,
+			titles: group.terminalInstances.map(inst => inst.title),
+		});
+	}
+	return result;
 });

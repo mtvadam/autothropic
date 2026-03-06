@@ -39,7 +39,7 @@ export class PreviewService extends Disposable implements IPreviewService {
 	private _clipTimer: number | null = null;
 	private _clipActive = false;
 	private _clipCapturing = false;
-	private readonly _maxClipFrames = 50; // 10 FPS x 5 seconds
+	private readonly _maxClipFrames = 51; // ~5s at 10 FPS + 1 spare
 	private readonly _captureIntervalMs = 100; // 10 FPS
 
 	constructor(
@@ -155,17 +155,21 @@ export class PreviewService extends Disposable implements IPreviewService {
 		if (!this._clipActive || !this._clipTimer) {
 			this.startClipBuffer();
 		}
-		const cutoff = Date.now() - seconds * 1000;
-		this._clipSnapshot = this._clipFrames.filter(f => f.timestamp >= cutoff);
 
 		// If buffer is empty, try to capture a single frame on-demand
-		if (this._clipSnapshot.length === 0 && this._webviewElement) {
+		if (this._clipFrames.length === 0 && this._webviewElement) {
 			console.log('[preview] clip buffer empty, attempting on-demand capture');
 			await this._captureClipFrameForced();
-			this._clipSnapshot = this._clipFrames.filter(f => f.timestamp >= cutoff);
 		}
 
-		console.log(`[preview] getClipThumbnails: ${this._clipSnapshot.length} frames (buffer: ${this._clipFrames.length}, active: ${this._clipActive}, timer: ${!!this._clipTimer}, webview: ${!!this._webviewElement}, connected: ${!!(this._webviewElement as any)?.isConnected})`);
+		// Return the last N frames by count (seconds × FPS), not by timestamp.
+		// This ensures frames are never "lost" just because capture paused
+		// (e.g. preview tab hidden). Frames are only evicted at _maxClipFrames.
+		const maxFrames = Math.ceil(seconds * (1000 / this._captureIntervalMs));
+		const startIdx = Math.max(0, this._clipFrames.length - maxFrames);
+		this._clipSnapshot = this._clipFrames.slice(startIdx);
+
+		console.log(`[preview] getClipThumbnails(${seconds}s): ${this._clipSnapshot.length} frames (buffer: ${this._clipFrames.length}, requested: ${maxFrames}, active: ${this._clipActive}, timer: ${!!this._clipTimer})`);
 
 		return this._clipSnapshot.map((f, i) => ({
 			index: i,
@@ -177,8 +181,9 @@ export class PreviewService extends Disposable implements IPreviewService {
 
 	getSuggestedIndices(seconds: number, maxFrames: number): number[] {
 		if (this._clipSnapshot.length === 0) {
-			const cutoff = Date.now() - seconds * 1000;
-			this._clipSnapshot = this._clipFrames.filter(f => f.timestamp >= cutoff);
+			const maxCount = Math.ceil(seconds * (1000 / this._captureIntervalMs));
+			const startIdx = Math.max(0, this._clipFrames.length - maxCount);
+			this._clipSnapshot = this._clipFrames.slice(startIdx);
 		}
 		if (this._clipSnapshot.length === 0) { return []; }
 		if (this._clipSnapshot.length <= maxFrames) {

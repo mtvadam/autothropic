@@ -162,6 +162,71 @@ window.addEventListener('message',function(e){
   }
 });
 
+/* ── Intercept external navigation — open in system browser instead ── */
+var proxyHost=location.host;
+var origLocationDescriptor=Object.getOwnPropertyDescriptor(window,'location');
+function isExternalUrl(url){
+  try{
+    var u=new URL(url,location.href);
+    return u.host!==proxyHost&&u.host!==location.host&&u.protocol.indexOf('http')===0;
+  }catch(e){return false;}
+}
+/* Intercept link clicks that navigate to external URLs */
+document.addEventListener('click',function(e){
+  var a=e.target;
+  while(a&&a.tagName!=='A')a=a.parentElement;
+  if(a&&a.href&&isExternalUrl(a.href)){
+    e.preventDefault();
+    window.parent.postMessage({type:'__bridge_open_external',url:a.href},'*');
+  }
+},true);
+/* Intercept form submissions to external URLs */
+document.addEventListener('submit',function(e){
+  var form=e.target;
+  if(form&&form.action&&isExternalUrl(form.action)){
+    e.preventDefault();
+    window.parent.postMessage({type:'__bridge_open_external',url:form.action},'*');
+  }
+},true);
+/* Intercept window.location assignment for external URLs */
+var origAssign=window.location.assign.bind(window.location);
+var origReplace2=window.location.replace.bind(window.location);
+window.location.assign=function(url){
+  if(isExternalUrl(url)){window.parent.postMessage({type:'__bridge_open_external',url:new URL(url,location.href).href},'*');return;}
+  origAssign(url);
+};
+window.location.replace=function(url){
+  if(isExternalUrl(url)){window.parent.postMessage({type:'__bridge_open_external',url:new URL(url,location.href).href},'*');return;}
+  origReplace2(url);
+};
+/* Override location.href setter to intercept external navigations */
+try{
+  var _loc=window.location;
+  var _origHrefSet=Object.getOwnPropertyDescriptor(Location.prototype,'href');
+  if(_origHrefSet&&_origHrefSet.set){
+    var _realSet=_origHrefSet.set;
+    Object.defineProperty(Location.prototype,'href',{
+      get:_origHrefSet.get,
+      set:function(v){
+        if(isExternalUrl(v)){window.parent.postMessage({type:'__bridge_open_external',url:new URL(v,_loc.href).href},'*');return;}
+        _realSet.call(this,v);
+      },
+      configurable:true,enumerable:true
+    });
+  }
+}catch(le){}
+/* Navigation API fallback (Chromium 102+) — only intercept cross-origin navigations.
+   Skip pushState/replaceState (SvelteKit SPA routing) and reload/traverse. */
+if(window.navigation){
+  window.navigation.addEventListener('navigate',function(e){
+    if(!e.canIntercept||e.hashChange||e.navigationType==='reload'||e.navigationType==='traverse')return;
+    if(e.destination&&e.destination.url&&isExternalUrl(e.destination.url)){
+      e.preventDefault();
+      window.parent.postMessage({type:'__bridge_open_external',url:e.destination.url},'*');
+    }
+  });
+}
+
 /* ── SPA navigation detection (pushState/replaceState/popstate) ── */
 var origPush=history.pushState;
 var origReplace=history.replaceState;

@@ -16,6 +16,14 @@ export interface AgentSession {
 	restartCount: number;
 	/** Timestamp of last auto-restart */
 	lastRestartAt: number;
+	/** File path where this agent writes its response for orchestration */
+	responseFile?: string;
+	/** Auto-approve tool prompts (send Enter on input_needed) */
+	autoApprove?: boolean;
+	/** How output is distributed to downstream agents */
+	fanoutMode?: 'broadcast' | 'split';
+	/** Claude Code session UUID — used for --resume on restart/reopen */
+	claudeSessionId?: string;
 }
 
 export type EdgeCondition = 'all' | 'code-changes' | 'errors' | 'summary-only';
@@ -76,5 +84,11 @@ export interface SerializableSession {
 	graphPosition: { x: number; y: number };
 	systemPrompt?: string;
 	humanInLoop?: boolean;
+	autoApprove?: boolean;
+	fanoutMode?: 'broadcast' | 'split';
 	createdAt: number;
+	/** Terminals sharing the same splitGroup string are restored into a split pane */
+	splitGroup?: string;
+	/** Claude Code session UUID — used for --resume on restart/reopen */
+	claudeSessionId?: string;
 }

@@ -752,7 +752,7 @@ export class PreviewPanel {
 
   private buildCustomFrame(w: number, h: number): string {
     return `<div id="device-frame" class="custom" style="width:${w}px;height:${h}px;">
-  <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+  <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-top-navigation-by-user-activation"></iframe>
 </div>`;
   }
 
@@ -897,7 +897,7 @@ export class PreviewPanel {
         ${statusBarHtml}
       </div>
       ${chromeHtml.top}
-      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-top-navigation-by-user-activation"></iframe>
       ${chromeHtml.bottom}
       ${homeIndicatorHtml}
     </div>
@@ -947,7 +947,7 @@ export class PreviewPanel {
         ${statusBarHtml}
       </div>
       ${chromeHtml.top}
-      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-top-navigation-by-user-activation"></iframe>
       ${chromeHtml.bottom}
       ${homeIndicatorHtml}
     </div>
@@ -965,7 +965,7 @@ export class PreviewPanel {
 
     return `<div id="device-frame" class="tablet">
   <div class="screen-area" style="width:${w}px;height:${h}px;">
-    <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-top-navigation-by-user-activation"></iframe>
   </div>
 </div>`;
   }
@@ -994,7 +994,7 @@ export class PreviewPanel {
       ${taskbarHtml.top}
       ${osFrameHtml}
       ${chromeHtml}
-      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+      <iframe id="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-top-navigation-by-user-activation"></iframe>
       ${taskbarHtml.bottom}
     </div>
   </div>

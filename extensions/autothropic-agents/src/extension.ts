@@ -6,18 +6,29 @@ import { HITLManager } from './hitlManager';
 import { SessionTreeProvider } from './treeProvider';
 import { sendToSession, appendToSessionInput } from './messageRouter';
 
-const AGENT_COLORS = [
-	'#d97757', '#539bf5', '#57ab5a', '#9d4edd',
-	'#D4A574', '#f28482', '#4cc9f0', '#d4876a',
+const AGENT_COLORS: { hex: string; name: string }[] = [
+	{ hex: '#d97757', name: 'Copper' },
+	{ hex: '#539bf5', name: 'Blue' },
+	{ hex: '#57ab5a', name: 'Green' },
+	{ hex: '#9d4edd', name: 'Purple' },
+	{ hex: '#D4A574', name: 'Sand' },
+	{ hex: '#f28482', name: 'Coral' },
+	{ hex: '#4cc9f0', name: 'Cyan' },
+	{ hex: '#d4876a', name: 'Terracotta' },
 ];
 
 let statusBarItem: vscode.StatusBarItem;
+let _sessionManager: SessionManager | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
 	const sessionManager = new SessionManager(context);
+	_sessionManager = sessionManager;
 	const hitlManager = new HITLManager(sessionManager, context.extensionUri);
 	const outputDetector = new OutputDetector(sessionManager);
 	const orchestrationEngine = new OrchestrationEngine(sessionManager, hitlManager);
+
+	// Share orchestration debug channel with output detector
+	outputDetector.setDebugChannel(orchestrationEngine.debugChannel);
 
 	// Start output detection and orchestration
 	context.subscriptions.push(outputDetector.start());
@@ -29,6 +40,9 @@ export function activate(context: vscode.ExtensionContext) {
 			orchestrationEngine.handleCompletion(event);
 		})
 	);
+
+	// Poll response files for changes (works even when VS Code is backgrounded)
+	outputDetector.startResponsePoller();
 
 	// Auto-restart when Claude Code exits (with backoff to prevent spam)
 	context.subscriptions.push(
@@ -155,7 +169,7 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 				{
 					title: 'Step 4: Use a Topology Preset',
-					detail: 'In the Graph view, click "Topology" to deploy a pre-built team:\n  - Pipeline: Analyst -> Builder -> Reviewer\n  - Star: Leader + 3 Workers\n  - Fan-out/Fan-in: Source -> Workers -> Aggregator\n  - Review Loop: Builder <-> Reviewer (max 3 iterations)',
+					detail: 'In the Graph view, click "Topology" to deploy a pre-built team:\n  - Pipeline: Analyst \u2192Builder \u2192Reviewer\n  - Star: Leader + 3 Workers\n  - Fan-out/Fan-in: Source \u2192Workers \u2192Aggregator\n  - Review Loop: Builder \u21C4Reviewer (max 3 iterations)',
 				},
 				{
 					title: 'Step 5: Human-in-the-Loop (HITL)',
@@ -267,6 +281,18 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('_autothropic.agents.setSessionHITL', (id: string, enabled: boolean) => {
 			sessionManager.setSessionHITL(id, enabled);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('_autothropic.agents.setSessionAutoApprove', (id: string, enabled: boolean) => {
+			sessionManager.setSessionAutoApprove(id, enabled);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('_autothropic.agents.setSessionFanoutMode', (id: string, mode: 'broadcast' | 'split') => {
+			sessionManager.setSessionFanoutMode(id, mode);
 		})
 	);
 
@@ -396,10 +422,14 @@ export function activate(context: vscode.ExtensionContext) {
 			const session = sessionManager.getSession(item?.id);
 			if (!session) { return; }
 			const pick = await vscode.window.showQuickPick(
-				AGENT_COLORS.map(c => ({ label: c, description: c === session.color ? '(current)' : '' })),
+				AGENT_COLORS.map(c => ({
+					label: `$(circle-filled) ${c.name}`,
+					description: c.hex === session.color ? '(current)' : '',
+					hex: c.hex,
+				})),
 				{ placeHolder: 'Pick agent color' },
 			);
-			if (pick) { sessionManager.setSessionColor(session.id, pick.label); }
+			if (pick) { sessionManager.setSessionColor(session.id, (pick as any).hex); }
 		})
 	);
 
@@ -408,6 +438,17 @@ export function activate(context: vscode.ExtensionContext) {
 			const session = sessionManager.getSession(item?.id);
 			if (session) {
 				sessionManager.setSessionHITL(session.id, !session.humanInLoop);
+			}
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('autothropic.agents.toggleAutoApprove', (item: any) => {
+			const session = sessionManager.getSession(item?.id);
+			if (session) {
+				const newVal = !session.autoApprove;
+				sessionManager.setSessionAutoApprove(session.id, newVal);
+				vscode.window.showInformationMessage(`${session.name}: auto-approve ${newVal ? 'ON' : 'OFF'}`);
 			}
 		})
 	);
@@ -433,6 +474,22 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('_autothropic.agents.restartSession', (id: string) => {
 			outputDetector.clearBuffer(id);
 			sessionManager.restartSession(id, true);
+		})
+	);
+
+	// =============================================
+	// Debug tool for orchestration
+	// =============================================
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('autothropic.agents.debugOrchestration', () => {
+			orchestrationEngine.dumpState();
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('autothropic.agents.showOrchestrationLog', () => {
+			orchestrationEngine.showDebug();
 		})
 	);
 
@@ -474,29 +531,11 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.registerTerminalProfileProvider('autothropic.agentTerminal', {
 			provideTerminalProfile(): vscode.ProviderResult<vscode.TerminalProfile> {
 				const cwd = vscode.workspace.workspaceFolders?.[0]?.uri;
-				if (sessionManager.dockerReady) {
-					// Use default shell so we can send docker run command
-					return new vscode.TerminalProfile({
-						name: `Agent ${sessionManager.nextAgentNumber()}`,
-						cwd,
-						iconPath: new vscode.ThemeIcon('robot'),
-						env: {
-							TERM_PROGRAM: 'xterm-256color',
-							TERM_PROGRAM_VERSION: '',
-							VSCODE_IPC_HOOK_CLI: '',
-							VSCODE_GIT_IPC_HANDLE: '',
-							VSCODE_GIT_ASKPASS_NODE: '',
-							VSCODE_GIT_ASKPASS_EXTRA_ARGS: '',
-							VSCODE_GIT_ASKPASS_MAIN: '',
-							GIT_ASKPASS: '',
-							ELECTRON_RUN_AS_NODE: '',
-						},
-					});
-				}
+				// Always use default shell so we can send the claude command with
+				// --session-id for conversation persistence. The onDidOpenTerminal
+				// handler below will adopt it and send the command.
 				return new vscode.TerminalProfile({
 					name: `Agent ${sessionManager.nextAgentNumber()}`,
-					shellPath: 'claude',
-					shellArgs: [],
 					cwd,
 					iconPath: new vscode.ThemeIcon('robot'),
 					env: {
@@ -520,16 +559,11 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.onDidOpenTerminal((terminal) => {
 			if (sessionManager.getSessionByTerminal(terminal)) { return; }
 			const creationOpts = (terminal as any).creationOptions;
-			// Direct claude profile (non-Docker)
-			if (creationOpts?.shellPath === 'claude') {
-				sessionManager.adoptTerminal(terminal);
-				return;
-			}
-			// Docker profile: name matches "Agent N" pattern but no shellPath
-			if (!creationOpts?.shellPath && /^Agent \d+$/.test(terminal.name) && sessionManager.dockerReady) {
-				sessionManager.adoptTerminal(terminal);
-				// Send docker run command to the shell terminal
-				terminal.sendText(sessionManager.agentCommand());
+			// Profile-created terminal: name matches "Agent N" and no shellPath
+			if (!creationOpts?.shellPath && /^Agent \d+$/.test(terminal.name)) {
+				const adopted = sessionManager.adoptTerminal(terminal);
+				// Send the full claude command with system prompt + session tracking
+				terminal.sendText(sessionManager.buildLaunchCommand(adopted));
 			}
 		})
 	);
@@ -578,4 +612,8 @@ function updateStatusBar(sessionManager: SessionManager): void {
 	statusBarItem.show();
 }
 
-export function deactivate() {}
+export async function deactivate() {
+	if (_sessionManager) {
+		await _sessionManager.saveStateWithGroups();
+	}
+}

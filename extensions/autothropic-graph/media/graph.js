@@ -12,8 +12,8 @@
   // @ts-ignore
   const vscode = acquireVsCodeApi();
 
-  const NODE_W = 180;
-  const NODE_H = 100;
+  const NODE_W = 240;
+  const NODE_H = 110;
   const MIN_ZOOM = 0.3;
   const MAX_ZOOM = 2;
   const PORT_GAP = 20;
@@ -36,8 +36,6 @@
   /** @type {any[]} */ let sessions = [];
   /** @type {any[]} */ let edges = [];
   /** @type {Record<string, string[]>} */ let outputPreviews = {};
-  /** @type {any} */ let goalState = null;
-  /** @type {any} */ let orchestratorState = null;
   let zoom = 1;
   let panX = 0, panY = 0;
   let selectedId = null;
@@ -47,6 +45,7 @@
   // Edge connection drag state
   let connectFromId = null;
   let connectMouseX = 0, connectMouseY = 0;
+  let reconnectingEdgeId = null; // edge being reconnected via drag
 
   // Node drag state
   let dragNodeId = null;
@@ -67,13 +66,6 @@
   const contextMenu = document.getElementById('context-menu');
   const broadcastInput = document.getElementById('broadcast-input');
   const idleCountEl = document.getElementById('idle-count');
-  const goalBar = document.getElementById('goal-bar');
-  const goalPlanningEl = document.getElementById('goal-planning');
-  const goalTasksEl = document.getElementById('goal-tasks');
-  const goalActionsEl = document.getElementById('goal-actions');
-  const goalProgressFill = document.getElementById('goal-progress-fill');
-  const goalProgressText = document.getElementById('goal-progress-text');
-  const goalPromptText = document.getElementById('goal-prompt-text');
 
   // --- Init ---
   vscode.postMessage({ type: 'ready' });
@@ -86,8 +78,6 @@
         sessions = msg.sessions || [];
         edges = msg.edges || [];
         outputPreviews = msg.outputPreviews || {};
-        goalState = msg.goalState || null;
-        orchestratorState = msg.orchestratorState || null;
         render();
         break;
       case 'edgePulse':
@@ -102,8 +92,6 @@
     renderEdges();
     updateStats();
     updateInstructions();
-    renderGoalBar();
-    renderPipelineBar();
   }
 
   function renderNodes() {
@@ -188,18 +176,6 @@
     name.className = 'node-name';
     name.textContent = session.name;
     header.appendChild(name);
-
-    // Show task badge if linked to a goal
-    if (session.taskId && goalState) {
-      const task = (goalState.tasks || []).find(t => t.id === session.taskId);
-      if (task) {
-        const taskBadge = document.createElement('span');
-        taskBadge.className = 'node-task-badge ' + task.status;
-        taskBadge.textContent = taskIcon(task.status);
-        taskBadge.title = `Task: ${task.title} (${task.status})`;
-        header.appendChild(taskBadge);
-      }
-    }
 
     const status = document.createElement('span');
     status.className = 'node-status';
@@ -303,19 +279,7 @@
 
     // Defs
     const defs = document.createElementNS(ns, 'defs');
-    const marker = document.createElementNS(ns, 'marker');
-    marker.setAttribute('id', 'arrowhead');
-    marker.setAttribute('markerWidth', '10');
-    marker.setAttribute('markerHeight', '7');
-    marker.setAttribute('refX', '10');
-    marker.setAttribute('refY', '3.5');
-    marker.setAttribute('orient', 'auto');
-    marker.setAttribute('overflow', 'visible');
-    const polygon = document.createElementNS(ns, 'polygon');
-    polygon.setAttribute('points', '0 0, 10 3.5, 0 7');
-    polygon.setAttribute('fill', '#d97757');
-    marker.appendChild(polygon);
-    defs.appendChild(marker);
+    // Arrowhead markers are created per-edge color below
 
     // Grid pattern
     const pattern = document.createElementNS(ns, 'pattern');
@@ -345,6 +309,26 @@
     gridRect.setAttribute('fill', 'url(#grid)');
     g.appendChild(gridRect);
 
+    // Orange chevron arrowhead — always visible
+    const arrowId = 'arrow-chevron';
+    const arrowMarker = document.createElementNS(ns, 'marker');
+    arrowMarker.setAttribute('id', arrowId);
+    arrowMarker.setAttribute('markerWidth', '12');
+    arrowMarker.setAttribute('markerHeight', '12');
+    arrowMarker.setAttribute('refX', '10');
+    arrowMarker.setAttribute('refY', '6');
+    arrowMarker.setAttribute('orient', 'auto');
+    arrowMarker.setAttribute('markerUnits', 'userSpaceOnUse');
+    const chevron = document.createElementNS(ns, 'polyline');
+    chevron.setAttribute('points', '3,2 10,6 3,10');
+    chevron.setAttribute('fill', 'none');
+    chevron.setAttribute('stroke', '#d97757');
+    chevron.setAttribute('stroke-width', '2');
+    chevron.setAttribute('stroke-linecap', 'round');
+    chevron.setAttribute('stroke-linejoin', 'round');
+    arrowMarker.appendChild(chevron);
+    defs.appendChild(arrowMarker);
+
     // Edges
     for (const edge of edges) {
       const from = sessions.find(s => s.id === edge.from);
@@ -359,22 +343,22 @@
       const pathD = buildEdgePath(x1, y1, x2, y2, from, to);
       const edgeKey = edge.from + '->' + edge.to;
       const isActive = pulsingEdges.has(edgeKey);
-
-      // Shadow
-      const shadow = document.createElementNS(ns, 'path');
-      shadow.setAttribute('d', pathD);
-      shadow.setAttribute('fill', 'none');
-      shadow.setAttribute('stroke', getComputedStyle(document.documentElement).getPropertyValue('--g-bg').trim() || '#000');
-      shadow.setAttribute('stroke-width', '4');
-      shadow.setAttribute('stroke-opacity', '0.2');
-      g.appendChild(shadow);
+      const edgeColor = from.color || '#d97757';
+      const pathLen = (() => {
+        const tmp = document.createElementNS(ns, 'path');
+        tmp.setAttribute('d', pathD);
+        edgeLayer.appendChild(tmp);
+        const len = tmp.getTotalLength();
+        edgeLayer.removeChild(tmp);
+        return len;
+      })();
 
       // Hit area
       const hitArea = document.createElementNS(ns, 'path');
       hitArea.setAttribute('d', pathD);
       hitArea.setAttribute('fill', 'none');
       hitArea.setAttribute('stroke', 'transparent');
-      hitArea.setAttribute('stroke-width', '16');
+      hitArea.setAttribute('stroke-width', '14');
       hitArea.style.cursor = 'context-menu';
       hitArea.style.pointerEvents = 'stroke';
       hitArea.addEventListener('contextmenu', (e) => {
@@ -382,42 +366,75 @@
         e.stopPropagation();
         showEdgeMenu(e.clientX, e.clientY, edge);
       });
+      hitArea.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        vscode.postMessage({ type: 'removeEdge', edgeId: edge.id });
+      });
+      hitArea.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Start reconnecting: remove old edge, begin connect-from source
+        reconnectingEdgeId = edge.id;
+        connectFromId = edge.from;
+        const canvasPos = screenToCanvas(e.clientX, e.clientY);
+        connectMouseX = canvasPos.x;
+        connectMouseY = canvasPos.y;
+        // Remove edge immediately so preview line shows
+        vscode.postMessage({ type: 'removeEdge', edgeId: edge.id });
+      });
       g.appendChild(hitArea);
 
-      // Main edge
-      const edgePath = document.createElementNS(ns, 'path');
-      edgePath.setAttribute('d', pathD);
-      edgePath.setAttribute('fill', 'none');
-      edgePath.setAttribute('stroke', isActive ? '#d97757' : (getComputedStyle(document.documentElement).getPropertyValue('--g-fg-dimmer').trim() || '#5a5850'));
-      edgePath.setAttribute('stroke-width', isActive ? '3' : '2');
-      if (!isActive) edgePath.setAttribute('stroke-dasharray', '6 4');
-      edgePath.setAttribute('marker-end', 'url(#arrowhead)');
-      edgePath.style.pointerEvents = 'none';
-      edgePath.style.transition = 'stroke 0.3s, stroke-width 0.3s';
-      g.appendChild(edgePath);
+      // Base dotted line — always present
+      const basePath = document.createElementNS(ns, 'path');
+      basePath.setAttribute('d', pathD);
+      basePath.setAttribute('fill', 'none');
+      basePath.setAttribute('stroke', '#d97757');
+      basePath.setAttribute('stroke-width', '1.5');
+      basePath.setAttribute('stroke-opacity', isActive ? '0.55' : '0.4');
+      basePath.setAttribute('stroke-dasharray', '3 4');
+      basePath.setAttribute('stroke-linecap', 'round');
+      basePath.setAttribute('marker-end', `url(#${arrowId})`);
+      basePath.style.pointerEvents = 'none';
+      g.appendChild(basePath);
 
-      // Animated pulse circle
+      // Shimmer pulse: bright orange segment that travels along the path
       if (isActive) {
-        const circle = document.createElementNS(ns, 'circle');
-        circle.setAttribute('r', '4');
-        circle.setAttribute('fill', '#d97757');
-        circle.setAttribute('opacity', '0.9');
-        const motion = document.createElementNS(ns, 'animateMotion');
-        motion.setAttribute('dur', '0.8s');
-        motion.setAttribute('fill', 'freeze');
-        motion.setAttribute('path', pathD);
-        circle.appendChild(motion);
-        const fadeAnim = document.createElementNS(ns, 'animate');
-        fadeAnim.setAttribute('attributeName', 'opacity');
-        fadeAnim.setAttribute('from', '0.9');
-        fadeAnim.setAttribute('to', '0');
-        fadeAnim.setAttribute('dur', '0.8s');
-        fadeAnim.setAttribute('fill', 'freeze');
-        circle.appendChild(fadeAnim);
-        g.appendChild(circle);
+        // Glow underneath
+        const glow = document.createElementNS(ns, 'path');
+        glow.setAttribute('d', pathD);
+        glow.setAttribute('fill', 'none');
+        glow.setAttribute('stroke', '#c4845e');
+        glow.setAttribute('stroke-width', '5');
+        glow.setAttribute('stroke-opacity', '0.08');
+        glow.setAttribute('stroke-linecap', 'round');
+        glow.style.pointerEvents = 'none';
+        g.appendChild(glow);
+
+        // Bright traveling segment — a clipped portion of the path that sweeps forward
+        const segLen = Math.min(pathLen * 0.35, 120);
+        const shimmer = document.createElementNS(ns, 'path');
+        shimmer.setAttribute('d', pathD);
+        shimmer.setAttribute('fill', 'none');
+        shimmer.setAttribute('stroke', '#c4845e');
+        shimmer.setAttribute('stroke-width', '2');
+        shimmer.setAttribute('stroke-linecap', 'round');
+        shimmer.setAttribute('stroke-dasharray', `${segLen} ${pathLen}`);
+        shimmer.setAttribute('stroke-dashoffset', String(segLen));
+        shimmer.style.pointerEvents = 'none';
+        // Animate dashoffset to sweep the bright segment along
+        const anim = document.createElementNS(ns, 'animate');
+        anim.setAttribute('attributeName', 'stroke-dashoffset');
+        anim.setAttribute('from', String(segLen));
+        anim.setAttribute('to', String(-pathLen));
+        anim.setAttribute('dur', '0.6s');
+        anim.setAttribute('repeatCount', 'indefinite');
+        shimmer.appendChild(anim);
+        g.appendChild(shimmer);
       }
 
-      // Label
+      // Condition / iteration label
       const condLabel = CONDITION_LABELS[edge.condition] || '';
       const iterLabel = edge.maxIterations > 0 ? `${edge.iterationCount}/${edge.maxIterations}` : '';
       const label = [condLabel, iterLabel].filter(Boolean).join(' ');
@@ -428,9 +445,8 @@
         text.setAttribute('x', String(midX));
         text.setAttribute('y', String(midY));
         text.setAttribute('text-anchor', 'middle');
-        text.setAttribute('fill', getComputedStyle(document.documentElement).getPropertyValue('--g-fg-dim').trim() || '#888');
+        text.setAttribute('fill', 'rgba(255,255,255,0.35)');
         text.setAttribute('font-size', '9');
-        text.setAttribute('font-family', 'monospace');
         text.style.pointerEvents = 'none';
         text.textContent = label;
         g.appendChild(text);
@@ -448,10 +464,9 @@
         line.setAttribute('y1', String(y1));
         line.setAttribute('x2', String(connectMouseX));
         line.setAttribute('y2', String(connectMouseY));
-        line.setAttribute('stroke', '#d97757');
-        line.setAttribute('stroke-width', String(2 / zoom));
-        line.setAttribute('stroke-dasharray', '6 4');
-        line.setAttribute('stroke-opacity', '0.6');
+        line.setAttribute('stroke', 'rgba(255,255,255,0.2)');
+        line.setAttribute('stroke-width', String(1.5 / zoom));
+        line.setAttribute('stroke-linecap', 'round');
         g.appendChild(line);
       }
     }
@@ -572,6 +587,7 @@
     }
     if (connectFromId) {
       connectFromId = null;
+      reconnectingEdgeId = null;
       renderEdges();
     }
   });
@@ -778,16 +794,15 @@
 
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'menu-item destructive';
-    deleteBtn.textContent = 'Delete edge';
+    deleteBtn.textContent = 'Disconnect';
     deleteBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'removeEdge', edgeId: edge.id });
       hideMenus();
     });
     edgeMenu.appendChild(deleteBtn);
 
-    edgeMenu.style.left = x + 'px';
-    edgeMenu.style.top = y + 'px';
     edgeMenu.classList.remove('hidden');
+    clampMenuToViewport(edgeMenu, x, y);
   }
 
   // --- Node context menu ---
@@ -795,14 +810,40 @@
     hideMenus();
     contextMenu.innerHTML = '';
 
-    // Rename
+    // Rename — inline input (prompt() doesn't work in webviews)
     const renameBtn = document.createElement('button');
     renameBtn.className = 'menu-item';
     renameBtn.textContent = 'Rename';
-    renameBtn.addEventListener('click', () => {
-      const name = prompt('New name:', session.name);
-      if (name) vscode.postMessage({ type: 'renameSession', id: session.id, name });
-      hideMenus();
+    renameBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wrapper = document.createElement('div');
+      wrapper.className = 'custom-role-input';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'New name...';
+      input.value = session.name;
+      const confirmBtn = document.createElement('button');
+      confirmBtn.textContent = '✓';
+      confirmBtn.title = 'Rename';
+      wrapper.appendChild(input);
+      wrapper.appendChild(confirmBtn);
+      renameBtn.replaceWith(wrapper);
+      input.focus();
+      input.select();
+      const submit = () => {
+        const name = input.value.trim();
+        if (name) {
+          vscode.postMessage({ type: 'renameSession', id: session.id, name });
+        }
+        hideMenus();
+      };
+      confirmBtn.addEventListener('click', (ev) => { ev.stopPropagation(); submit(); });
+      input.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') submit();
+        if (ev.key === 'Escape') hideMenus();
+      });
+      input.addEventListener('mousedown', (ev) => ev.stopPropagation());
     });
     contextMenu.appendChild(renameBtn);
 
@@ -828,14 +869,41 @@
     }
     contextMenu.appendChild(roleGrid);
 
-    // Custom role
+    // Custom role — inline input (prompt() doesn't work in webviews)
     const customRoleBtn = document.createElement('button');
     customRoleBtn.className = 'menu-item';
     customRoleBtn.textContent = 'Custom Role...';
-    customRoleBtn.addEventListener('click', () => {
-      const role = prompt('System prompt:', session.systemPrompt || '');
-      if (role !== null) vscode.postMessage({ type: 'setRole', id: session.id, role });
-      hideMenus();
+    customRoleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Replace button with inline input
+      const wrapper = document.createElement('div');
+      wrapper.className = 'custom-role-input';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'System prompt...';
+      input.value = session.systemPrompt || '';
+      const confirmBtn = document.createElement('button');
+      confirmBtn.textContent = '✓';
+      confirmBtn.title = 'Set role';
+      wrapper.appendChild(input);
+      wrapper.appendChild(confirmBtn);
+      customRoleBtn.replaceWith(wrapper);
+      input.focus();
+      input.select();
+      const submit = () => {
+        const role = input.value.trim();
+        if (role) {
+          vscode.postMessage({ type: 'setRole', id: session.id, role });
+        }
+        hideMenus();
+      };
+      confirmBtn.addEventListener('click', (ev) => { ev.stopPropagation(); submit(); });
+      input.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') submit();
+        if (ev.key === 'Escape') hideMenus();
+      });
+      input.addEventListener('mousedown', (ev) => ev.stopPropagation());
     });
     contextMenu.appendChild(customRoleBtn);
 
@@ -866,6 +934,18 @@
     });
     contextMenu.appendChild(hitlBtn);
 
+    // Fanout mode toggle
+    const fanoutBtn = document.createElement('button');
+    fanoutBtn.className = 'menu-item';
+    const isSplit = session.fanoutMode === 'split';
+    fanoutBtn.textContent = isSplit ? '✓ Split Output' : 'Split Output';
+    fanoutBtn.title = isSplit ? 'Currently splitting tasks across downstream agents. Click to broadcast instead.' : 'Split numbered/bullet list items across downstream agents instead of broadcasting.';
+    fanoutBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'setFanoutMode', id: session.id, mode: isSplit ? 'broadcast' : 'split' });
+      hideMenus();
+    });
+    contextMenu.appendChild(fanoutBtn);
+
     contextMenu.appendChild(createDivider());
 
     // Delete
@@ -878,9 +958,23 @@
     });
     contextMenu.appendChild(deleteBtn);
 
-    contextMenu.style.left = x + 'px';
-    contextMenu.style.top = y + 'px';
     contextMenu.classList.remove('hidden');
+    clampMenuToViewport(contextMenu, x, y);
+  }
+
+  function clampMenuToViewport(menu, x, y) {
+    // Position first so we can measure
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    const rect = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (rect.right > vw) x -= rect.right - vw + 4;
+    if (rect.bottom > vh) y -= rect.bottom - vh + 4;
+    if (x < 0) x = 4;
+    if (y < 0) y = 4;
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
   }
 
   function createDivider() {
@@ -931,212 +1025,6 @@
     } else {
       instructionsEl.classList.add('hidden');
     }
-  }
-
-  // --- Goal Bar ---
-  function renderGoalBar() {
-    if (!goalState) {
-      goalBar.classList.add('hidden');
-      goalPlanningEl.classList.add('hidden');
-      container.style.top = '36px';
-      return;
-    }
-
-    if (goalState.status === 'planning') {
-      goalBar.classList.add('hidden');
-      goalPlanningEl.classList.remove('hidden');
-      container.style.top = '72px';
-      return;
-    }
-
-    goalPlanningEl.classList.add('hidden');
-    goalBar.classList.remove('hidden');
-    container.style.top = '110px';
-
-    const tasks = goalState.tasks || [];
-    const doneCount = tasks.filter(t => t.status === 'done' || t.status === 'merged').length;
-    const total = tasks.length;
-    const pct = total > 0 ? (doneCount / total) * 100 : 0;
-
-    goalPromptText.textContent = goalState.prompt.length > 60
-      ? goalState.prompt.slice(0, 60) + '...'
-      : goalState.prompt;
-    goalProgressText.textContent = `${doneCount}/${total} tasks complete`;
-    goalProgressFill.style.width = pct + '%';
-
-    // Task chips
-    goalTasksEl.innerHTML = '';
-    for (const task of tasks) {
-      const chip = document.createElement('div');
-      chip.className = 'goal-task-chip ' + task.status;
-      chip.title = task.description || task.title;
-
-      const icon = document.createElement('span');
-      icon.className = 'goal-task-icon';
-      icon.textContent = taskIcon(task.status);
-      chip.appendChild(icon);
-
-      const label = document.createElement('span');
-      label.textContent = task.title.length > 20 ? task.title.slice(0, 20) + '...' : task.title;
-      chip.appendChild(label);
-
-      // Click to focus the agent's terminal
-      if (task.assignedTo) {
-        chip.style.cursor = 'pointer';
-        chip.addEventListener('dblclick', () => {
-          vscode.postMessage({ type: 'focusTerminal', id: task.assignedTo });
-        });
-      }
-
-      goalTasksEl.appendChild(chip);
-    }
-
-    // Action buttons
-    goalActionsEl.innerHTML = '';
-
-    if (goalState.status === 'done' || doneCount === total) {
-      const mergeBtn = document.createElement('button');
-      mergeBtn.className = 'goal-merge-btn';
-      mergeBtn.textContent = 'Merge All';
-      mergeBtn.addEventListener('click', () => {
-        vscode.postMessage({ type: 'mergeAll', goalId: goalState.id });
-      });
-      goalActionsEl.appendChild(mergeBtn);
-    }
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'goal-cancel-btn';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'cancelGoal', goalId: goalState.id });
-    });
-    goalActionsEl.appendChild(cancelBtn);
-  }
-
-  function taskIcon(status) {
-    switch (status) {
-      case 'pending': return '○';
-      case 'assigned': return '◐';
-      case 'running': return '●';
-      case 'done': return '✓';
-      case 'failed': return '✗';
-      case 'merged': return '⊕';
-      default: return '○';
-    }
-  }
-
-  // --- Talk to Main Agent button ---
-  const talkMainBtn = document.createElement('button');
-  talkMainBtn.id = 'btn-talk-main';
-  talkMainBtn.textContent = '💬 Main Agent';
-  talkMainBtn.addEventListener('click', () => {
-    vscode.postMessage({ type: 'focusOrchestrator' });
-  });
-  document.getElementById('info-bar').insertBefore(talkMainBtn, document.getElementById('btn-presets'));
-
-  // --- Set Goal button ---
-  const goalInputVisible = { value: false };
-  const setGoalBtn = document.createElement('button');
-  setGoalBtn.id = 'btn-set-goal';
-  setGoalBtn.textContent = '⚡ Set Goal';
-  document.getElementById('info-bar').insertBefore(setGoalBtn, document.getElementById('btn-add-agent'));
-
-  const goalInputContainer = document.createElement('div');
-  goalInputContainer.id = 'goal-input-container';
-  goalInputContainer.className = 'hidden';
-  goalInputContainer.innerHTML = `
-    <input id="goal-input" type="text" placeholder="Describe your goal..." />
-    <button id="btn-goal-go">Go</button>
-    <button id="btn-goal-cancel-input">✕</button>
-  `;
-  document.getElementById('info-bar').parentElement.appendChild(goalInputContainer);
-
-  setGoalBtn.addEventListener('click', () => {
-    if (goalState) {
-      vscode.postMessage({ type: 'cancelGoal', goalId: goalState.id });
-      return;
-    }
-    goalInputContainer.classList.toggle('hidden');
-    if (!goalInputContainer.classList.contains('hidden')) {
-      document.getElementById('goal-input').focus();
-    }
-  });
-
-  goalInputContainer.addEventListener('click', (e) => e.stopPropagation());
-
-  const submitGoal = () => {
-    const input = document.getElementById('goal-input');
-    const prompt = input.value.trim();
-    if (prompt) {
-      vscode.postMessage({ type: 'startGoal', prompt });
-      input.value = '';
-      goalInputContainer.classList.add('hidden');
-    }
-  };
-
-  // Delegate events for dynamically created elements
-  document.addEventListener('click', (e) => {
-    if (e.target.id === 'btn-goal-go') submitGoal();
-    if (e.target.id === 'btn-goal-cancel-input') goalInputContainer.classList.add('hidden');
-  });
-
-  document.addEventListener('keydown', (e) => {
-    const goalInput = document.getElementById('goal-input');
-    if (goalInput && document.activeElement === goalInput) {
-      if (e.key === 'Enter') { e.preventDefault(); submitGoal(); }
-      if (e.key === 'Escape') { goalInputContainer.classList.add('hidden'); }
-    }
-  });
-
-  // --- Pipeline Progress Bar ---
-  function renderPipelineBar() {
-    let pipelineBar = document.getElementById('pipeline-bar');
-    if (!orchestratorState || !orchestratorState.planActive) {
-      if (pipelineBar) pipelineBar.classList.add('hidden');
-      return;
-    }
-
-    if (!pipelineBar) {
-      pipelineBar = document.createElement('div');
-      pipelineBar.id = 'pipeline-bar';
-      document.body.appendChild(pipelineBar);
-    }
-    pipelineBar.classList.remove('hidden');
-    pipelineBar.innerHTML = '';
-
-    const stage = orchestratorState.currentStage;
-    const taskIdx = orchestratorState.currentTaskIndex;
-    const total = orchestratorState.totalTasks;
-    const pending = orchestratorState.pendingInputCount;
-
-    // Stage label
-    const stageLabel = document.createElement('span');
-    stageLabel.className = 'pipeline-stage';
-    stageLabel.textContent = `Stage: ${stage}`;
-    pipelineBar.appendChild(stageLabel);
-
-    // Task progress
-    const taskLabel = document.createElement('span');
-    taskLabel.className = 'pipeline-tasks';
-    taskLabel.textContent = total > 0 ? `Task ${Math.min(taskIdx + 1, total)}/${total}` : '';
-    pipelineBar.appendChild(taskLabel);
-
-    // Pending input indicator
-    if (pending > 0) {
-      const inputLabel = document.createElement('span');
-      inputLabel.className = 'pipeline-input-needed';
-      inputLabel.textContent = `⚠ ${pending} needs input`;
-      pipelineBar.appendChild(inputLabel);
-    }
-
-    // Talk to Main Agent button
-    const talkBtn = document.createElement('button');
-    talkBtn.className = 'pipeline-talk-btn';
-    talkBtn.textContent = '💬 Main Agent';
-    talkBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'focusOrchestrator' });
-    });
-    pipelineBar.appendChild(talkBtn);
   }
 
   // --- Input Modal ---

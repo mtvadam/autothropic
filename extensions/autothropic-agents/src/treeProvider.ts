@@ -45,6 +45,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentSession
       `**${session.name}** — ${session.status}\n\n` +
       (session.systemPrompt ? `*Role:* ${session.systemPrompt.slice(0, 100)}${session.systemPrompt.length > 100 ? '...' : ''}\n\n` : '') +
       (session.humanInLoop ? '👁 HITL enabled\n\n' : '') +
+      (session.autoApprove ? '⚡ Auto-approve ON\n\n' : '') +
       `Color: ${session.color}`
     );
 
